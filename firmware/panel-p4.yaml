@@ -1,0 +1,3787 @@
+## Dashboard camper — Guition JC8012P4A1C (ESP32-P4 + C6, 10.1" 800x1280 MIPI DSI)
+##
+## UI v2 (docs/ui-v2): pannello della CELLULA. Barra di navigazione fissa
+## (Casa, Risorse, Clima, Veicolo, Media, Sistema), pianta vera del Prince con
+## le 15 luci, risorse con stime di autonomia calcolate sul pannello, veicolo in
+## secondo piano (gli allarmi compaiono come banner su ogni pagina).
+## Tema chiaro/scuro: switch "Dark Mode" (automazione HA camper_monitor_dark_mode).
+## WiFi via ESP32-C6 (esp-hosted), HA API. Audio rimosso (nessuna cassa).
+## Flash: see README.md.
+
+substitutions:
+  device_name: monitor-camper-p4
+  device_friendly: "Monitor Camper"
+
+  # ─── Interruttore generale utenze (conn 17 CBE pin 14 = C.GEN) ───
+  # PIN richiesto a schermo prima di commutare le utenze 12V.
+  utenze_pin: !secret utenze_pin
+
+  # ─── Sonde NTC CBE su ADS1115 ───
+  # Misurate in camper 2026-09-28: int 12.45k @18.5 C, est 13.58k @16.5 C.
+  # Beta 3950 + R25 9.2k le rende entrambe entro 0.2 C. Beta non verificato
+  # lontano da 17 C: un punto in acqua e ghiaccio (0 C) lo conferma.
+  ntc_beta: "3950"
+  ntc_r25: "9.2kOhm"
+  ntc_r_fixed: "10kOhm"
+
+  # ─── Risorse (stime di autonomia) ───
+  # Capacita' per convertire le percentuali: 2x100 Ah AGM, serbatoio 118 L.
+  batt_ah: "200"
+  water_l: "118"
+  # Grigie: capienza non documentata, ~210 L a occhio (2026-10-13). ponytail:
+  # la sonda di pieno riallinea la stima; correggere se si scopre il dato.
+  grey_l: "210"
+  grey_from_fresh: "0.9"
+  # Soglia a cui la batteria si considera "finita" (AGM: sotto il 40% scatta
+  # l'avviso critico in HA). Acqua e gas contano fino a 0.
+  batt_floor: "40"
+
+  # Home Assistant del camper (copertina album del media player)
+  ha_url: !secret ha_url
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${device_friendly}
+  min_version: 2026.1.0
+  includes:
+    - ui_helpers.h
+  platformio_options:
+    board_build.flash_mode: dio
+  on_boot:
+    # -100 = a setup completato: a 600 (come sul 7") il P4 crasha al boot
+    # perche' LVGL non e' ancora inizializzato quando parte lvgl.page.show
+    priority: -100
+    then:
+      - light.turn_on: display_backlight
+      - script.execute: apply_theme
+      - delay: 1600ms
+      - script.execute: { id: nav, idx: 0 }
+      - script.execute: update_brightness
+      - script.execute: update_utenze
+      - script.execute: update_resources
+      - script.execute: update_grey
+      - script.execute: update_chart
+
+
+esp32:
+  variant: ESP32P4
+  flash_size: 16MB
+  # NB: 360MHz fa crashare il boot su questo chip (rev1.3 + engineering_sample) — vedi test 2026-07-04
+  cpu_frequency: 400MHZ
+  engineering_sample: true
+  framework:
+    type: esp-idf
+    advanced:
+      enable_idf_experimental_features: true
+
+# WiFi via ESP32-C6 co-processore (SDIO)
+esp32_hosted:
+  variant: esp32c6
+  reset_pin: GPIO54
+  cmd_pin: GPIO19
+  clk_pin: GPIO18
+  d0_pin: GPIO14
+  d1_pin: GPIO15
+  d2_pin: GPIO16
+  d3_pin: GPIO17
+  active_high: true
+  sdio_frequency: 20MHz
+  # use_psram RIMOSSO 2026-07-05: build senza gira stabile sul banco (6+ min);
+  # la config di riferimento (jtenniswood) non lo usa. L'assert sdio_mempool_create
+  # del 4/7 era un sintomo del C6 non power-cycled, non della RAM.
+
+psram:
+  mode: hex
+  speed: 200MHz
+
+# Alimentazione PHY MIPI DSI
+esp_ldo:
+  - channel: 3
+    id: dsi_phy_enable
+    voltage: 2.5V
+    adjustable: true
+
+# gsl3680 vendorizzato (kvj/esphome@jd9365_gsl3680 + patch mark_failed per 2026.x)
+external_components:
+  - source:
+      type: local
+      path: components
+    components: [gsl3680]
+
+logger:
+  level: INFO
+  # La USB-C del pannello passa da un bridge UART0, non da USB_SERIAL_JTAG
+  hardware_uart: UART0
+
+# Stampa reset reason + heap a ogni boot — diagnosi crash silenzioso
+debug:
+  update_interval: 30s
+
+# ────────────────────────────────────────────────────────────
+# Network + Home Assistant
+# ────────────────────────────────────────────────────────────
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: NONE
+  ap:
+    ssid: "${device_name}"
+    password: !secret wifi_ap_password
+
+api:
+  encryption:
+    key: !secret api_key
+  # Standalone: mai riavviare se HA e' assente (pannello utile anche senza rete)
+  reboot_timeout: 0s
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+time:
+  - platform: homeassistant
+    id: ha_time
+
+# ────────────────────────────────────────────────────────────
+# Hardware: I2C, backlight PWM, display MIPI DSI, touch
+# ────────────────────────────────────────────────────────────
+i2c:
+  - id: bus_i2c
+    sda: GPIO7
+    scl: GPIO8
+    frequency: 400kHz
+    scan: false
+    sda_pullup_enabled: false
+    scl_pullup_enabled: false
+
+# ADC esterno per le due sonde NTC della CBE: sul P4 non c'e' un ADC
+# libero (GPIO16-23 e 49-54 sono occupati o non cablati sulla board).
+# Breakout su CN4 o FPC3, ADDR a GND -> 0x48. A2/A3 restano liberi.
+ads1115:
+  - id: adc_ntc
+    i2c_id: bus_i2c
+    address: 0x48
+    continuous_mode: false
+
+# Espansore I2C sullo stesso CN4: comanda il modulo relè (hardware/interface-board-bom.md).
+# P0 = relè 1 generale utenze. Webasto spostato su ESP32 dedicato (stato via HA).
+# All'accensione le uscite sono alte = relè a riposo.
+pcf8574:
+  - id: exp_out
+    i2c_id: bus_i2c
+    address: 0x20
+    pcf8575: false
+
+# Retroilluminazione PWM reale (sul 7" era on/off + overlay software)
+output:
+  - platform: ledc
+    id: backlight_pwm
+    pin: GPIO23
+
+light:
+  - platform: monochromatic
+    output: backlight_pwm
+    id: display_backlight
+    name: "Retroilluminazione"
+    restore_mode: ALWAYS_ON
+    default_transition_length: 0s
+    gamma_correct: 1.0
+    # Wake simmetrico: qualunque cosa accenda il backlight (HA, number
+    # luminosita) deve anche riprendere LVGL, altrimenti schermo congelato
+    on_turn_on:
+      - if:
+          condition: lvgl.is_paused
+          then:
+            - lvgl.resume:
+            - lvgl.widget.redraw:
+
+display:
+  - platform: mipi_dsi
+    id: lcd
+    model: JC8012P4A1
+    color_order: RGB
+    reset_pin: GPIO27
+    update_interval: never
+    auto_clear_enabled: false
+    dimensions:
+      width: 800
+      height: 1280
+
+
+# ────────────────────────────────────────────────────────────
+# Font: Montserrat da Google Fonts (pesi 500/600/700) + MDI.
+# I font built-in di LVGL non hanno le accentate, quindi non si usano.
+# ────────────────────────────────────────────────────────────
+font:
+  - file: "gfonts://Montserrat@700"
+    id: f_t11
+    size: 11
+    bpp: 4
+    glyphs: &txt ' !#%&''()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[]_abcdefghijklmnopqrstuvwxyz°·àèéìòù~'
+  - file: "gfonts://Montserrat@500"
+    id: f_s14
+    size: 14
+    bpp: 4
+    glyphs: *txt
+  - file: "gfonts://Montserrat@500"
+    id: f_s15
+    size: 15
+    bpp: 4
+    glyphs: *txt
+  - file: "gfonts://Montserrat@700"
+    id: f_h15
+    size: 15
+    bpp: 4
+    glyphs: *txt
+  - file: "gfonts://Montserrat@600"
+    id: f_m17
+    size: 17
+    bpp: 4
+    glyphs: *txt
+  - file: "gfonts://Montserrat@700"
+    id: f_b20
+    size: 20
+    bpp: 4
+    glyphs: *txt
+  - file: "gfonts://Montserrat@700"
+    id: f_b26
+    size: 26
+    bpp: 4
+    glyphs: *txt
+  - file: "gfonts://Montserrat@700"
+    id: f_b36
+    size: 36
+    bpp: 4
+    glyphs: *txt
+  - file: "gfonts://Montserrat@700"
+    id: f_b48
+    size: 48
+    bpp: 4
+    glyphs: *txt
+  - file: "gfonts://Montserrat@700"
+    id: f_b56
+    size: 56
+    bpp: 4
+    glyphs: *txt
+  - file: "gfonts://Montserrat@700"
+    id: f_b76
+    size: 76
+    bpp: 4
+    glyphs: "0123456789-,.°"
+  # Orologio della schermata Notte
+  - file: "gfonts://Montserrat@700"
+    id: f_b200
+    size: 200
+    bpp: 4
+    glyphs: "0123456789:-"
+  # Splash
+  - file: "gfonts://Montserrat"
+    id: mont_76
+    size: 76
+    bpp: 4
+    glyphs: "montercapi"
+
+  # ─── Icone MDI ───
+  # Pianta (bottoni luce)
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: i_xs
+    size: 20
+    bpp: 4
+    glyphs:
+      - "\U000F17C9"  # wall-sconce-flat-outline (mansarda)
+      - "\U000F179B"  # light-recessed (faretti panca)
+      - "\U000F05BC"  # table-furniture
+      - "\U000F0769"  # ceiling-light
+      - "\U000F1051"  # led-strip-variant
+      - "\U000F1054"  # outdoor-lamp
+      - "\U000F04DE"  # stove
+      - "\U000F0583"  # walk (corridoio)
+      - "\U000F09A1"  # shower-head
+      - "\U000F09AB"  # toilet
+      - "\U000F17D0"  # lamp-outline (comodini)
+      - "\U000F12D3"  # garage-variant (gavone)
+      - "\U000F028F"  # fridge-outline (frigo sulla pianta)
+  # Righe, chip, intestazioni delle card
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: i_s
+    size: 24
+    bpp: 4
+    glyphs:
+      - "\U000F10AF"  # door-closed-lock
+      - "\U000F081C"  # door-open
+      - "\U000F0647"  # gas-cylinder
+      - "\U000F0CC8"  # shield-check-outline
+      - "\U000F0026"  # alert
+      - "\U000F156D"  # sofa-outline
+      - "\U000F0097"  # bunk-bed-outline
+      - "\U000F0099"  # bed-outline
+      - "\U000F0E50"  # lightbulb-off-outline
+      - "\U000F1253"  # lightbulb-group
+      - "\U000F0080"  # battery-70
+      - "\U000F0084"  # battery-charging
+      - "\U000F058C"  # water
+      - "\U000F1855"  # water-opacity (grigie)
+      - "\U000F140B"  # lightning-bolt
+      - "\U000F06A5"  # power-plug
+      - "\U000F06A6"  # power-plug-off
+      - "\U000F07E7"  # power-socket-eu (colonnina)
+      - "\U000F01FA"  # engine
+      - "\U000F0A47"  # engine-off-outline
+      - "\U000F1904"  # home-lightning-bolt-outline
+      - "\U000F012A"  # chart-line
+      - "\U000F0F55"  # home-thermometer-outline
+      - "\U000F050F"  # thermometer
+      - "\U000F0238"  # fire
+      - "\U000F001B"  # air-conditioner
+      - "\U000F028F"  # fridge-outline
+      - "\U000F058F"  # water-pump
+      - "\U000F032A"  # leaf
+      - "\U000F14DF"  # rocket-launch-outline
+      - "\U000F0717"  # snowflake
+      - "\U000F0210"  # fan
+      - "\U000F0425"  # power
+      - "\U000F0C4D"  # car-tire-alert
+      - "\U000F14F1"  # spirit-level
+      - "\U000F08F0"  # map-marker-distance
+      - "\U000F11BE"  # car-info
+      - "\U000F0D5F"  # car-brake-parking
+      - "\U000F0B6B"  # car-door
+      - "\U000F0C4A"  # car-light-dimmed
+      - "\U000F03C7"  # oil
+      - "\U000F010C"  # car-battery
+      - "\U000F1A80"  # thermometer-water
+      - "\U000F0298"  # gas-station
+      - "\U000F0469"  # router-wireless
+      - "\U000F048B"  # server
+      - "\U000F050E"  # theme-light-dark
+      - "\U000F05E0"  # check-circle
+      - "\U000F0159"  # close-circle
+      - "\U000F0028"  # alert-circle
+      - "\U000F11D4"  # rv-truck
+      - "\U000F051F"  # timer-sand
+      - "\U000F07FB"  # van-utility
+      - "\U000F075A"  # music
+      - "\U000F00DF"  # brightness-6
+      - "\U000F0594"  # weather-night
+      - "\U000F08A8"  # clipboard-check-outline
+  # Barra di navigazione, scene, meteo, player
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: i_m
+    size: 32
+    bpp: 4
+    glyphs:
+      - "\U000F02DE"  # home-variant
+      - "\U000F051F"  # timer-sand
+      - "\U000F0393"  # thermostat
+      - "\U000F07FB"  # van-utility
+      - "\U000F075A"  # music
+      - "\U000F08BB"  # cog-outline
+      - "\U000F0594"  # weather-night
+      - "\U000F00DF"  # brightness-6
+      - "\U000F059C"  # weather-sunset-up
+      - "\U000F0A48"  # exit-run
+      - "\U000F0A70"  # silverware-fork-knife
+      - "\U000F08A8"  # clipboard-check-outline
+      - "\U000F0599"  # weather-sunny
+      - "\U000F0595"  # weather-partly-cloudy
+      - "\U000F0590"  # weather-cloudy
+      - "\U000F0597"  # weather-rainy
+      - "\U000F0598"  # weather-snowy
+      - "\U000F0591"  # weather-fog
+      - "\U000F059D"  # weather-windy
+      - "\U000F0593"  # weather-lightning
+      - "\U000F0596"  # weather-pouring
+      - "\U000F04AD"  # skip-next
+      - "\U000F04AE"  # skip-previous
+      - "\U000F075D"  # volume-plus
+      - "\U000F075E"  # volume-minus
+      - "\U000F040A"  # play
+      - "\U000F03E4"  # pause
+      - "\U000F0425"  # power
+      # schermata di riposo
+      - "\U000F0F55"  # home-thermometer-outline
+      - "\U000F0080"  # battery-70
+      - "\U000F0CC8"  # shield-check-outline
+      - "\U000F0028"  # alert-circle
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: i_l
+    size: 44
+    bpp: 4
+    glyphs:
+      - "\U000F11D4"  # rv-truck (logo)
+      - "\U000F051F"  # timer-sand
+      - "\U000F01FA"  # engine
+      - "\U000F0A47"  # engine-off-outline
+      - "\U000F040A"  # play
+      - "\U000F03E4"  # pause
+      - "\U000F0026"  # alert
+      - "\U000F0425"  # power
+  - file: "fonts/materialdesignicons-webfont.ttf"
+    id: i_xl
+    size: 120
+    bpp: 4
+    glyphs:
+      - "\U000F075A"  # music (copertina del player)
+
+# Pianta del Prince (docs/ui-v2/prince-top.png) ruotata col muso a destra e
+# gia' composta sul colore della card: una per tema, niente filtri a runtime.
+image:
+  - file: images/plan_dark.png
+    id: img_plan_dark
+    type: RGB565
+  - file: images/plan_light.png
+    id: img_plan_light
+    type: RGB565
+  - file: images/roof_top_h.png
+    id: img_roof
+    type: RGB565
+    transparency: alpha_channel
+
+touchscreen:
+  - platform: gsl3680
+    id: touch
+    i2c_id: bus_i2c
+    reset_pin: GPIO22
+    interrupt_pin: GPIO21
+    # Il GSL3680 a volte non genera l'interrupt di fine tocco: senza questo
+    # fallback il touch resta "premuto" e il tap successivo viene assorbito
+    # (doppio tap dopo lo swipe). Rilettura forzata dopo 50ms di silenzio.
+    touch_timeout: 50ms
+    # Transform per landscape con lvgl rotation: 90 (da espcontrol, stessa board)
+    transform:
+      swap_xy: false
+      mirror_x: true
+      mirror_y: false
+    # Touch-to-wake (sostituisce il binary_sensor touch_any del 7")
+    on_release:
+      then:
+        - if:
+            condition:
+              lvgl.is_paused
+            then:
+              # Accende con la luminosita' corrente (il global puo' essere
+              # cambiato dall'automazione HA mentre lo schermo era spento)
+              - light.turn_on:
+                  id: display_backlight
+                  brightness: !lambda 'return id(display_brightness) / 100.0;'
+              - lvgl.resume:
+              - lvgl.widget.redraw:
+              # Spento dalla schermata con l'ora: si torna alla Casa
+              - if:
+                  condition:
+                    lambda: 'return id(night_on);'
+                  then:
+                    - script.execute: night_exit
+
+# ────────────────────────────────────────────────────────────
+# Diagnostica ESP32
+# ────────────────────────────────────────────────────────────
+button:
+  - platform: restart
+    name: "Riavvia"
+    icon: "mdi:restart"
+
+  - platform: safe_mode
+    name: "Safe Mode"
+    icon: "mdi:shield-bug"
+
+  # Sotto 10V la DS-300 stacca le utenze e si riarma solo con OFF->ON
+  # dell'interruttore generale (manuale CBE pag. 6).
+  - platform: template
+    name: "Reset utenze 12V"
+    icon: "mdi:restart-alert"
+    on_press:
+      - switch.turn_off: sw_utenze
+      - delay: 3s
+      - switch.turn_on: sw_utenze
+
+# ────────────────────────────────────────────────────────────
+# Copertina dell'album (pagina Media): HA espone la copertina del media
+# player come entity_picture (proxy con token, niente login). Il pannello la
+# scarica da HA a ogni cambio e la mette al posto della nota musicale.
+# ────────────────────────────────────────────────────────────
+http_request:
+  timeout: 10s
+
+online_image:
+  - id: cover_img
+    url: "${ha_url}/local/cover.jpg"  # rimpiazzato da set_url, mai scaricato da solo
+    # Le copertine dell'integrazione Apple TV (HomePod) arrivano in JPEG
+    format: JPEG
+    type: RGB565
+    resize: 400x400
+    buffer_size: 32768
+    on_download_finished:
+      - lvgl.image.update: { id: md_cover, src: cover_img }
+      - lvgl.widget.show: md_cover
+    on_error:
+      - lvgl.widget.hide: md_cover
+
+
+# ────────────────────────────────────────────────────────────
+# Diagnostica ESP32
+# ────────────────────────────────────────────────────────────
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Segnale"
+    update_interval: 30s
+    entity_category: diagnostic
+
+  - platform: uptime
+    name: "Uptime"
+    entity_category: diagnostic
+
+  - platform: internal_temperature
+    name: "Temperatura CPU"
+    entity_category: diagnostic
+    update_interval: 60s
+
+  # ────────────────────────────────────────────────────────────
+  # Sonde temperatura CBE (NTC 2 fili) su ADS1115
+  # Partitore: 3V3 -> R fissa 10k 1% -> canale ADS -> NTC -> GND
+  # A0 = sonda INTERNA, A1 = sonda ESTERNA
+  # ────────────────────────────────────────────────────────────
+  - platform: ads1115
+    ads1115_id: adc_ntc
+    id: ntc_int_v
+    multiplexer: A0_GND
+    gain: 4.096
+    update_interval: 10s
+    internal: true
+    filters:
+      - median:
+          window_size: 5
+          send_every: 3
+
+  - platform: resistance
+    id: ntc_int_r
+    sensor: ntc_int_v
+    configuration: DOWNSTREAM
+    resistor: ${ntc_r_fixed}
+    reference_voltage: 3.3V
+    internal: true
+
+  - platform: ntc
+    id: temp_int_ntc
+    sensor: ntc_int_r
+    name: "Temp interna (sonda CBE)"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    calibration:
+      b_constant: ${ntc_beta}
+      reference_temperature: 25°C
+      reference_resistance: ${ntc_r25}
+    filters:
+      # Sonda staccata / in corto -> valore assurdo: non lo mostro
+      - filter_out: nan
+      - lambda: 'return (x > -40.0f && x < 90.0f) ? x : NAN;'
+    on_value:
+      - lambda: 'id(ntc_int_seen) = millis();'
+      - script.execute: update_temps
+
+  # Sonda pieno grigie: 3V3 -> 100k -> A2 -> elettrodo; comune = pin 11 (AGND).
+  # Asciutta ~3,3 V, bagnata sotto ~1,6 V. Il serbatoio ha solo la coppia del
+  # pieno (viti blu/marrone in alto, validata col ponte 2026-10-13); REC 1/3 (A3)
+  # segue il pieno a monte nella DS-300, quindi non viene letto.
+  - platform: ads1115
+    ads1115_id: adc_ntc
+    id: grey_full_v
+    name: "Grigie pieno (tensione sonda)"
+    multiplexer: A2_GND
+    gain: 4.096
+    update_interval: 10s
+    accuracy_decimals: 2
+
+  - platform: ads1115
+    ads1115_id: adc_ntc
+    id: ntc_ext_v
+    multiplexer: A1_GND
+    gain: 4.096
+    update_interval: 10s
+    internal: true
+    filters:
+      - median:
+          window_size: 5
+          send_every: 3
+
+  - platform: resistance
+    id: ntc_ext_r
+    sensor: ntc_ext_v
+    configuration: DOWNSTREAM
+    resistor: ${ntc_r_fixed}
+    reference_voltage: 3.3V
+    internal: true
+
+  - platform: ntc
+    id: temp_ext_ntc
+    sensor: ntc_ext_r
+    name: "Temp esterna (sonda CBE)"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    calibration:
+      b_constant: ${ntc_beta}
+      reference_temperature: 25°C
+      reference_resistance: ${ntc_r25}
+    filters:
+      - filter_out: nan
+      - lambda: 'return (x > -40.0f && x < 90.0f) ? x : NAN;'
+    on_value:
+      - lambda: 'id(ntc_ext_seen) = millis();'
+      - script.execute: update_temps
+
+  # ─── Energia (Victron SmartShunt) ───
+  - platform: homeassistant
+    id: ha_batt_soc
+    entity_id: sensor.victron_smart_shunt_battery
+    on_value:
+      - script.execute: update_resources
+  - platform: homeassistant
+    id: ha_current
+    entity_id: sensor.victron_smart_shunt_current
+    on_value:
+      - script.execute: update_resources
+  - platform: homeassistant
+    id: ha_batt_v2
+    entity_id: sensor.victron_smart_shunt_voltage
+    on_value:
+      - lvgl.label.update:
+          id: rs_batt_u
+          text: !lambda 'return ui::fmt(x, 1, " V");'
+  - platform: homeassistant
+    id: ha_batt_v1
+    entity_id: sensor.victron_smart_shunt_starter_battery_voltage
+    on_value:
+      - lvgl.label.update:
+          id: vs_v1
+          text: !lambda 'return ui::fmt(x, 1, " V");'
+  - platform: homeassistant
+    id: ha_batt_power
+    entity_id: sensor.victron_smart_shunt_power
+    on_value:
+      - lvgl.label.update:
+          id: rc_pow
+          text: !lambda 'return ui::fmt(x, 0, " W");'
+
+  # ─── Rete 230V dalla colonnina (Sonoff MINI-ZB1GP; unavailable = colonnina staccata) ───
+  - platform: homeassistant
+    id: ha_rete_w
+    entity_id: sensor.rete_230v_power
+    on_value: { script.execute: update_rete }
+  - platform: homeassistant
+    id: ha_rete_a
+    entity_id: sensor.rete_230v_current
+    on_value: { script.execute: update_rete }
+  - platform: homeassistant
+    id: ha_rete_lim
+    entity_id: input_number.limite_colonnina
+    on_value: { script.execute: update_rete }
+
+  # ─── Acqua e gas ───
+  - platform: homeassistant
+    id: ha_water
+    entity_id: sensor.esp32_serbatoio_acqua_livello_acqua
+    on_value:
+      - script.execute: update_resources
+      # Grigie: conta solo i cali delle chiare; isteresi contro il rumore del livello
+      # (un rumore contato solo in discesa farebbe salire la stima da solo).
+      - lambda: |-
+          float &ref = id(fresh_ref);
+          if (isnan(x)) return;
+          if (isnan(ref) || x > ref + 3.0f) { ref = x; return; }  // avvio o rifornimento
+          if (x < ref - 1.0f) {
+            id(grey_est_l) = std::min(id(grey_est_l) + (ref - x) / 100.0f * ${water_l} * ${grey_from_fresh}f, (float) ${grey_l});
+            ref = x;
+            id(update_grey).execute();
+          }
+  # Bombola GPL a peso (esp32-panca: 4 celle + HX711)
+  - platform: homeassistant
+    id: ha_gas_percent
+    entity_id: sensor.panca_gas_remaining_percent
+    on_value:
+      - script.execute: update_resources
+  - platform: homeassistant
+    id: ha_gas_kg
+    entity_id: sensor.panca_gas_remaining
+    on_value:
+      - lvgl.label.update:
+          id: rs_gas_u
+          text: !lambda 'return ui::fmt(x, 1, " kg");'
+
+  # ─── Temperature ambienti ───
+  - platform: homeassistant
+    id: ha_t_din
+    entity_id: sensor.sensore_presenza_dinette_temperature
+    on_value:
+      - script.execute: update_temps
+  - platform: homeassistant
+    id: ha_h_din
+    entity_id: sensor.sensore_presenza_dinette_humidity
+    on_value:
+      - lvgl.label.update:
+          id: dentro_ur
+          text: !lambda 'return ui::fmt(x, 0, "%");'
+  - platform: homeassistant
+    id: ha_t_mans
+    entity_id: sensor.termoigrometro_mansarda_temperature
+    on_value:
+      - script.execute: update_temps
+  - platform: homeassistant
+    id: ha_t_letto
+    entity_id: sensor.termoigrometro_camera_da_letto_temperature
+    on_value:
+      - script.execute: update_temps
+  - platform: homeassistant
+    id: ha_t_frigo_int
+    entity_id: sensor.termoigrometro_frigorifero_temperature
+    on_value:
+      - lambda: |-
+          if (isnan(x)) return;
+          if (x < 10.0f) { id(dom_on) = true; id(dom_warm_since) = 0; }
+          else if (id(dom_on) && id(dom_warm_since) == 0) id(dom_warm_since) = millis();
+          ui::checked(id(fr_dom), id(dom_on));
+      - lvgl.label.update:
+          id: am_frigo
+          text: !lambda 'return ui::fmt(x, 1, "°");'
+  # Fallback della sonda esterna CBE
+  - platform: homeassistant
+    id: ha_temp_ext
+    entity_id: sensor.bthome_sensor_bbf7_temperatura
+    on_value:
+      - script.execute: update_temps
+  - platform: homeassistant
+    id: ha_weather_temp
+    entity_id: weather.forecast_casa
+    attribute: temperature
+    internal: true
+
+  # ─── Frigo Vevor ───
+  - platform: homeassistant
+    id: ha_frigo_temp
+    entity_id: climate.vevor_c50_fridge
+    attribute: current_temperature
+    on_value:
+      - script.execute: update_clima
+  - platform: homeassistant
+    id: ha_frigo_target
+    entity_id: climate.vevor_c50_fridge
+    attribute: temperature
+    on_value:
+      - lambda: 'if (!isnan(x)) id(frigo_target) = x;'
+      - script.execute: update_clima
+
+  # ─── Condizionatore (generic_thermostat, solo con 230V) ───
+  - platform: homeassistant
+    id: ha_clima_now
+    entity_id: climate.climatizzatore_camper
+    attribute: current_temperature
+    on_value:
+      - script.execute: update_clima
+  - platform: homeassistant
+    id: ha_clima_target
+    entity_id: climate.climatizzatore_camper
+    attribute: temperature
+    on_value:
+      - lambda: 'if (!isnan(x)) id(clima_target) = x;'
+      - script.execute: update_clima
+
+  # ─── Veicolo (WiCAN / Torque) ───
+  - platform: homeassistant
+    id: ha_fuel
+    entity_id: sensor.livello_carburante_camper
+    on_value:
+      - script.execute: update_vehicle
+  - platform: homeassistant
+    id: ha_fuel_km
+    entity_id: sensor.autonomia_carburante_camper
+    on_value:
+      - script.execute: update_vehicle
+  - platform: homeassistant
+    id: ha_km_tot
+    entity_id: sensor.wican_km_totali
+    on_value:
+      - lvgl.label.update:
+          id: vs_km
+          text: !lambda |-
+            if (isnan(x)) return std::string("--");
+            char b[16]; snprintf(b, sizeof b, "%.0f", x);
+            std::string s(b);   // separatore delle migliaia all'italiana
+            for (int i = (int) s.size() - 3; i > 0; i -= 3) s.insert(i, ".");
+            return s;
+  - platform: homeassistant
+    id: ha_oil
+    entity_id: sensor.temperatura_olio_motore
+    on_value:
+      - script.execute: update_vehicle
+  - platform: homeassistant
+    id: ha_coolant
+    entity_id: sensor.temperatura_liquido_raffreddamento
+    on_value:
+      - script.execute: update_vehicle
+  - platform: homeassistant
+    id: ha_trip_km
+    entity_id: sensor.wican_distanza_viaggio
+    on_value:
+      - lvgl.label.update:
+          id: tr_dist
+          text: !lambda 'return ui::fmt(x, 0, " km");'
+  - platform: homeassistant
+    id: ha_trip_h
+    entity_id: sensor.wican_durata_viaggio
+    on_value:
+      - lvgl.label.update:
+          id: tr_dur
+          text: !lambda |-
+            if (isnan(x)) return std::string("--");
+            int m = (int) lroundf(x * 60);
+            char b[16]; snprintf(b, sizeof b, "%d h %02d", m / 60, m % 60); return std::string(b);
+  - platform: homeassistant
+    id: ha_trip_avg
+    entity_id: sensor.wican_velocita_media
+    on_value:
+      - lvgl.label.update:
+          id: tr_avg
+          text: !lambda 'return ui::fmt(x, 0, " km/h");'
+  - platform: homeassistant
+    id: ha_trip_cons
+    entity_id: sensor.wican_consumo_medio
+    on_value:
+      - lvgl.label.update:
+          id: tr_cons
+          text: !lambda 'return ui::fmt(x, 1, " L");'
+  # Gomme (TPMS) + soglie regolabili dalla vista Gomme della Atoto
+  - platform: homeassistant
+    id: ha_p_as
+    entity_id: sensor.pressione_anteriore_sinistra
+    on_value: { script.execute: update_tyres }
+  - platform: homeassistant
+    id: ha_p_ad
+    entity_id: sensor.pressione_anteriore_destra
+    on_value: { script.execute: update_tyres }
+  - platform: homeassistant
+    id: ha_p_ps
+    entity_id: sensor.pressione_posteriore_sinistra
+    on_value: { script.execute: update_tyres }
+  - platform: homeassistant
+    id: ha_p_pd
+    entity_id: sensor.pressione_posteriore_destra
+    on_value: { script.execute: update_tyres }
+  - platform: homeassistant
+    id: ha_tt_as
+    entity_id: sensor.temperatura_gomma_anteriore_sinistra
+    on_value: { script.execute: update_tyres }
+  - platform: homeassistant
+    id: ha_tt_ad
+    entity_id: sensor.temperatura_gomma_anteriore_destra
+    on_value: { script.execute: update_tyres }
+  - platform: homeassistant
+    id: ha_tt_ps
+    entity_id: sensor.temperatura_gomma_posteriore_sinistra
+    on_value: { script.execute: update_tyres }
+  - platform: homeassistant
+    id: ha_tt_pd
+    entity_id: sensor.temperatura_gomma_posteriore_destra
+    on_value: { script.execute: update_tyres }
+  - platform: homeassistant
+    id: ha_tpms_min_ant
+    entity_id: input_number.tpms_anteriore_minima
+    internal: true
+  - platform: homeassistant
+    id: ha_tpms_min_post
+    entity_id: input_number.tpms_posteriore_minima
+    internal: true
+  - platform: homeassistant
+    id: ha_tpms_max_ant
+    entity_id: input_number.tpms_anteriore_massima
+    internal: true
+  - platform: homeassistant
+    id: ha_tpms_max_post
+    entity_id: input_number.tpms_posteriore_massima
+    internal: true
+  # Livella (media mobile 5 s in HA)
+  - platform: homeassistant
+    id: ha_tilt_x
+    entity_id: sensor.inclinazione_camper_x_filtrata
+    on_value: { script.execute: update_level }
+  - platform: homeassistant
+    id: ha_tilt_y
+    entity_id: sensor.inclinazione_camper_y_filtrata
+    on_value: { script.execute: update_level }
+
+  # ─── Sistema: router GL.iNet e host HAOS ───
+  - platform: homeassistant
+    id: ha_router_mem
+    entity_id: sensor.gl_inet_x750_memory_usage
+    on_value:
+      - lvgl.label.update: { id: rtr_mem, text: !lambda 'return ui::fmt(x, 0, "%");' }
+  - platform: homeassistant
+    id: ha_router_load
+    entity_id: sensor.gl_inet_x750_load_avg_1m
+    on_value:
+      - lvgl.label.update: { id: rtr_load, text: !lambda 'return ui::fmt(x, 2);' }
+  - platform: homeassistant
+    id: ha_router_clients
+    entity_id: sensor.router_client_connessi
+    on_value:
+      - lvgl.label.update: { id: rtr_clients, text: !lambda 'return ui::fmt(x, 0);' }
+  - platform: homeassistant
+    id: ha_router_signal
+    entity_id: sensor.router_wifi_segnale
+    on_value:
+      - lvgl.label.update: { id: rtr_signal, text: !lambda 'return ui::fmt(x, 0, " dBm");' }
+  - platform: homeassistant
+    id: ha_host_cpu
+    entity_id: sensor.system_monitor_processor_use
+    on_value:
+      - lvgl.label.update: { id: host_cpu, text: !lambda 'return ui::fmt(x, 0, "%");' }
+  - platform: homeassistant
+    id: ha_host_mem
+    entity_id: sensor.system_monitor_memory_usage
+    on_value:
+      - lvgl.label.update: { id: host_mem, text: !lambda 'return ui::fmt(x, 0, "%");' }
+  - platform: homeassistant
+    id: ha_host_disk
+    entity_id: sensor.system_monitor_disk_usage
+    on_value:
+      - lvgl.label.update: { id: host_disk, text: !lambda 'return ui::fmt(x, 0, "%");' }
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      id: wifi_ip
+      name: "IP Address"
+      icon: "mdi:ip-network"
+      entity_category: diagnostic
+    ssid:
+      name: "WiFi SSID"
+      entity_category: diagnostic
+    mac_address:
+      name: "MAC Address"
+      entity_category: diagnostic
+
+  # ─── Meteo, media ───
+  - platform: homeassistant
+    id: ha_weather_state
+    entity_id: weather.forecast_casa
+    on_value:
+      - script.execute: update_temps
+  - platform: homeassistant
+    id: ha_media_title
+    entity_id: media_player.homepod_mini
+    attribute: media_title
+    on_value:
+      - script.execute: update_nt_track
+      - lvgl.label.update: { id: md_title, text: !lambda 'return x.empty() ? std::string("Niente in riproduzione") : x;' }
+  - platform: homeassistant
+    id: ha_media_artist
+    entity_id: media_player.homepod_mini
+    attribute: media_artist
+    on_value:
+      - script.execute: update_nt_track
+      - lvgl.label.update: { id: md_artist, text: !lambda 'return x;' }
+  - platform: homeassistant
+    id: ha_media_pic
+    entity_id: media_player.homepod_mini
+    attribute: entity_picture
+    on_value:
+      - lambda: 'id(cover_url) = (x.empty() || x == "None") ? std::string() : x;'
+      - script.execute: load_cover
+  - platform: homeassistant
+    id: ha_media_state
+    entity_id: media_player.homepod_mini
+    on_value:
+      - script.execute: update_nt_track
+      - lvgl.label.update:
+          id: md_play_ico
+          text: !lambda 'return std::string(x == "playing" ? "\U000F03E4" : "\U000F040A");'
+      - lvgl.label.update:
+          id: md_state
+          text: !lambda |-
+            if (x == "playing") return std::string("In riproduzione · HomePod Dinette");
+            if (x == "paused") return std::string("In pausa · HomePod Dinette");
+            if (x == "unavailable") return std::string("HomePod non raggiungibile");
+            return std::string("HomePod Dinette");
+
+  # ─── Frigo e condizionatore ───
+  - platform: homeassistant
+    id: ha_frigo_state
+    entity_id: climate.vevor_c50_fridge
+    on_value: { script.execute: update_clima }
+  - platform: homeassistant
+    id: ha_frigo_preset
+    entity_id: climate.vevor_c50_fridge
+    attribute: preset_mode
+    on_value: { script.execute: update_clima }
+  - platform: homeassistant
+    id: ha_clima_state
+    entity_id: climate.climatizzatore_camper
+    on_value: { script.execute: update_clima }
+  # the IR switch itself: on without the thermostat = manual cooling
+  - platform: homeassistant
+    id: ha_clima_sw
+    entity_id: switch.climatizzatore
+    on_value: { script.execute: update_clima }
+  # on = 230V presente e Broadlink raggiungibile
+  - platform: homeassistant
+    id: ha_clima_ok
+    entity_id: binary_sensor.clima_disponibile
+    on_value: { script.execute: update_clima }
+
+  # ─── Energia: sorgente di carica e stato del caricabatterie ───
+  - platform: homeassistant
+    id: ha_charge_src
+    entity_id: sensor.sorgente_carica
+    on_value:
+      - lvgl.label.update: { id: rc_src, text: !lambda 'return x;' }
+  - platform: homeassistant
+    id: ha_charger_mode
+    entity_id: sensor.caricabatterie_modo
+    on_value:
+      - lvgl.label.update: { id: rc_mode, text: !lambda 'return x == "unavailable" || x == "unknown" ? std::string("spento") : x;' }
+  # on = colonnina presente ma al camper non arriva niente (template HA, delay_on 1 min)
+  - platform: homeassistant
+    id: ha_rete_mt
+    entity_id: binary_sensor.magnetotermico_230v_scattato
+    on_value: { script.execute: update_rete }
+
+  # ─── Sicurezza cellula ───
+  - platform: homeassistant
+    id: ha_porta
+    entity_id: binary_sensor.sensore_porta_entrata_contact
+    on_value: { script.execute: update_security }
+  - platform: homeassistant
+    id: ha_gas_alarm
+    entity_id: binary_sensor.esp32_cucina_allarme_gas
+    on_value: { script.execute: update_security }
+  - platform: homeassistant
+    id: ha_pompa
+    entity_id: switch.esp32_serbatoio_acqua_pompa
+    on_value:
+      - lvgl.label.update:
+          id: st_pompa_v
+          text: !lambda 'return x == "on" ? std::string("ON") : (x == "off" ? std::string("OFF") : std::string("--"));'
+          text_color: !lambda 'return x == "on" ? lv_color_hex(0x34C759) : lv_color_hex(0x8A909A);'
+      - lvgl.label.update:
+          id: rs_acq_k2
+          text: !lambda 'return x == "on" ? std::string("ON") : (x == "off" ? std::string("OFF") : std::string("--"));'
+
+  # ─── Veicolo: stati CAN ───
+  - platform: homeassistant
+    id: ha_motore
+    entity_id: binary_sensor.wican_motore_acceso
+    on_value: { script.execute: update_vehicle }
+  - platform: homeassistant
+    id: ha_freno
+    entity_id: binary_sensor.wican_freno_a_mano
+    on_value: { script.execute: update_vehicle }
+  - platform: homeassistant
+    id: ha_porte_cab
+    entity_id: binary_sensor.wican_porte
+    on_value: { script.execute: update_vehicle }
+  - platform: homeassistant
+    id: ha_anabb
+    entity_id: binary_sensor.wican_anabbaglianti
+    on_value: { script.execute: update_vehicle }
+  - platform: homeassistant
+    id: ha_livella
+    entity_id: sensor.livella_status
+    on_value: { script.execute: update_level }
+
+  # ─── Luci: stato delle 15 luci (nomi e posizioni come sulla Atoto) ───
+  - platform: homeassistant
+    id: ha_l_princ
+    entity_id: light.kincony_kc868_a16_luce_1
+    on_value:
+      - lvgl.widget.update: { id: lt_princ, state: { checked: !lambda 'return x == "on";' } }
+      - script.execute: update_lights
+  - platform: homeassistant
+    id: ha_l_tavolo
+    entity_id: light.shellyplus1_441793a44110_switch_0
+    on_value:
+      - lvgl.widget.update: { id: lt_tavolo, state: { checked: !lambda 'return x == "on";' } }
+      - script.execute: update_lights
+  - platform: homeassistant
+    id: ha_l_panca
+    entity_id: light.faretti_panca
+    on_value:
+      - lvgl.widget.update: { id: lt_panca, state: { checked: !lambda 'return x == "on";' } }
+      - script.execute: update_lights
+  - platform: homeassistant
+    id: ha_l_leddin
+    entity_id: light.kincony_kc868_a16_luce_9
+    on_value:
+      - lvgl.widget.update: { id: lt_leddin, state: { checked: !lambda 'return x == "on";' } }
+      - script.execute: update_lights
+  - platform: homeassistant
+    id: ha_l_corr
+    entity_id: light.kincony_kc868_a16_luce_2
+    on_value:
+      - lvgl.widget.update: { id: lt_corr, state: { checked: !lambda 'return x == "on";' } }
+      - script.execute: update_lights
+  - platform: homeassistant
+    id: ha_l_cucina
+    entity_id: light.kincony_kc868_a16_luce_3
+    on_value:
+      - lvgl.widget.update: { id: lt_cucina, state: { checked: !lambda 'return x == "on";' } }
+      - script.execute: update_lights
+  - platform: homeassistant
+    id: ha_l_ledcuc
+    entity_id: light.esp32_cucina_led_switch
+    on_value:
+      - lvgl.widget.update: { id: lt_ledcuc, state: { checked: !lambda 'return x == "on";' } }
+      - script.execute: update_lights
+  - platform: homeassistant
+    id: ha_l_bagno
+    entity_id: light.kincony_kc868_a16_luce_4
+    on_value:
+      - lvgl.widget.update: { id: lt_bagno, state: { checked: !lambda 'return x == "on";' } }
+      - script.execute: update_lights
+  - platform: homeassistant
+    id: ha_l_doccia
+    entity_id: light.shelly1_34945479f8e1
+    on_value:
+      - lvgl.widget.update: { id: lt_doccia, state: { checked: !lambda 'return x == "on";' } }
+      - script.execute: update_lights
+  - platform: homeassistant
+    id: ha_l_gavone
+    entity_id: light.shellyplus1_d0ef76d9cac0_switch_0
+    on_value:
+      - lvgl.widget.update: { id: lt_gavone, state: { checked: !lambda 'return x == "on";' } }
+      - script.execute: update_lights
+  - platform: homeassistant
+    id: ha_l_esterna
+    entity_id: light.kincony_kc868_a16_luce_12
+    on_value:
+      - lvgl.widget.update: { id: lt_esterna, state: { checked: !lambda 'return x == "on";' } }
+      - script.execute: update_lights
+  - platform: homeassistant
+    id: ha_l_mans1
+    entity_id: light.esp32_mansarda_luce_1
+    on_value:
+      - lvgl.widget.update: { id: lt_mans1, state: { checked: !lambda 'return x == "on";' } }
+      - script.execute: update_lights
+  - platform: homeassistant
+    id: ha_l_mans2
+    entity_id: light.esp32_mansarda_luce_2
+    on_value:
+      - lvgl.widget.update: { id: lt_mans2, state: { checked: !lambda 'return x == "on";' } }
+      - script.execute: update_lights
+  - platform: homeassistant
+    id: ha_l_letto1
+    entity_id: light.esp32_letto_luce_letto_1
+    on_value:
+      - lvgl.widget.update: { id: lt_letto1, state: { checked: !lambda 'return x == "on";' } }
+      - script.execute: update_lights
+  - platform: homeassistant
+    id: ha_l_letto2
+    entity_id: light.esp32_letto_luce_letto_2
+    on_value:
+      - lvgl.widget.update: { id: lt_letto2, state: { checked: !lambda 'return x == "on";' } }
+      - script.execute: update_lights
+
+globals:
+  # Secondi al distacco utenze durante spegni_server (conto alla rovescia)
+  - id: ut_left
+    type: int
+    initial_value: '0'
+  # Grigie stimate: litri usati dalle chiare x ${grey_from_fresh} dall'ultimo svuotamento
+  - id: grey_est_l
+    type: float
+    restore_value: yes
+    initial_value: '0'
+  - id: fresh_ref
+    type: float
+    restore_value: no
+    initial_value: 'NAN'
+  - id: dark_mode
+    type: bool
+    restore_value: yes
+    initial_value: 'true'
+  - id: display_brightness
+    type: int
+    restore_value: yes
+    initial_value: '100'
+  # Setpoint correnti (specchiati da HA, per i bottoni -/+)
+  - id: clima_target
+    type: float
+    restore_value: no
+    initial_value: '25.0'
+  - id: frigo_target
+    type: float
+    restore_value: no
+    initial_value: '4.0'
+  # Frigo Domotic (non domotizzato): acceso se l'interno scende sotto 10°,
+  # spento dopo 30 min consecutivi sopra
+  - id: dom_on
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: dom_warm_since
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+  # Inizio del riposo (millis): sotto 10 s il tocco torna alla pagina di prima
+  - id: night_t
+    type: uint32_t
+    initial_value: '0'
+  # Pagina attiva: 0 Casa, 1 Risorse, 2 Clima, 3 Veicolo, 4 Media, 5 Sistema
+  - id: cur_page
+    type: int
+    restore_value: no
+    initial_value: '0'
+  # Schermata Notte attiva: niente spegnimento automatico del backlight
+  - id: night_on
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  # millis() dell'ultima lettura valida delle NTC locali (0 = mai lette)
+  - id: ntc_int_seen
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+  - id: ntc_ext_seen
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+  # Tastierino PIN utenze
+  - id: pin_buf
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: pin_target
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  # Banner allarmi: testo corrente e testo gia' visto ("Ok, visto")
+  - id: alarm_text
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: alarm_seen
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: alarm_idx
+    type: int
+    restore_value: no
+    initial_value: '0'
+  # Storico orario delle risorse (72 h, % 0-100, 255 = nessun dato).
+  # Salvato in flash: si scrive una volta l'ora, le stime sopravvivono ai riavvii.
+  - id: hist_batt
+    type: std::array<uint8_t, 72>
+    restore_value: yes
+  - id: hist_water
+    type: std::array<uint8_t, 72>
+    restore_value: yes
+  - id: hist_gas
+    type: std::array<uint8_t, 72>
+    restore_value: yes
+  # Copertina album: URL corrente (entity_picture) e ultimo scaricato
+  - id: cover_url
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: cover_loaded
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+  - id: hist_head
+    type: int
+    restore_value: yes
+    initial_value: '0'
+  # Ora (epoch/3600) dell'ultimo campione; 0 = storico mai inizializzato
+  - id: hist_hour
+    type: uint32_t
+    restore_value: yes
+    initial_value: '0'
+
+# Dark mode esposto a HA: lo commuta l'automazione camper_monitor_dark_mode (lux)
+switch:
+  - platform: template
+    id: sw_dark_mode
+    name: "Dark Mode"
+    icon: "mdi:theme-light-dark"
+    lambda: 'return id(dark_mode);'
+    turn_on_action:
+      - globals.set: { id: dark_mode, value: 'true' }
+      - script.execute: apply_theme
+    turn_off_action:
+      - globals.set: { id: dark_mode, value: 'false' }
+      - script.execute: apply_theme
+
+  # ────────────────────────────────────────────────────────────
+  # Interruttore generale utenze — conn 17 CBE, pin 14 (C.GEN), a livello
+  # (verificato 2026-08-13: pin 14 a GND = utenze accese).
+  # PCF8574 P0 -> IN1 del modulo relè (low level trigger). Il 2026-10-13 il
+  # relè non scattava per un Dupont bianco rotto, non per il pin. Relè 1: COM -> pin 3,
+  # NC -> pin 14. P0 alto = relè a riposo = NC chiuso = utenze ON, quindi
+  # nessuna inversione. Pannello spento/guasto = utenze accese.
+  # Sulla linea utenze ci sono anche Raspberry HAOS e GL.iNet: si spegne
+  # solo passando dallo script spegni_server.
+  - platform: gpio
+    id: sw_utenze
+    name: "Utenze 12V"
+    icon: "mdi:power"
+    pin:
+      pcf8574: exp_out
+      number: 0
+      mode:
+        output: true
+    # Il camper deve ripartire ACCESO dopo un reboot del pannello
+    restore_mode: RESTORE_DEFAULT_ON
+
+  # Pompa acqua — PCF8574 P1 -> IN2, relè 2: COM -> conn17 pin 3 (GND),
+  # NC -> pin 6 (C.POMPA), al posto del ponte fisso. P1 alto = NC chiuso =
+  # pompa alimentata. Per lavori o perdite nel vano serbatoio. L'ESP del
+  # serbatoio sta sulla stessa linea: spenta la pompa, sparisce anche lui.
+  - platform: gpio
+    id: sw_pompa
+    name: "Pompa acqua"
+    icon: "mdi:water-pump"
+    pin:
+      pcf8574: exp_out
+      number: 1
+      mode:
+        output: true
+    # Ad ogni accensione la pompa riparte alimentata
+    restore_mode: ALWAYS_ON
+
+
+number:
+  - platform: template
+    id: num_brightness
+    name: "Luminosita Display"
+    icon: "mdi:brightness-6"
+    min_value: 30
+    max_value: 100
+    step: 5
+    lambda: 'return id(display_brightness);'
+    update_interval: 5s
+    set_action:
+      - globals.set:
+          id: display_brightness
+          value: !lambda 'return (int)x;'
+      - script.execute: update_brightness
+
+
+# ────────────────────────────────────────────────────────────
+# LVGL — UI v2 (docs/ui-v2)
+# Coordinate a schermo 1280x800: barra di navigazione 0-104, contenuto
+# x 124-1260, barra in alto y 16-80, contenuto y 96-784.
+# Colori: TUTTI negli stili qui sotto (valori del tema scuro); apply_theme li
+# riscrive per il tema chiaro. I widget non mettono colori di tema in linea,
+# solo quelli semantici (verde/ambra/rosso/blu/arancio) uguali nei due temi.
+# ────────────────────────────────────────────────────────────
+lvgl:
+  id: lvgl_comp
+  displays: [lcd]
+  touchscreens: [touch]
+  # Pannello nativo 800x1280 portrait -> UI 1280x800 landscape
+  rotation: 90
+  byte_order: little_endian
+  buffer_size: 25%
+  log_level: WARN
+  text_font: f_m17
+
+  style_definitions:
+    - { id: st_page, bg_color: 0x0E1116, bg_opa: COVER, text_color: 0xF2F2F4 }
+    - { id: st_card, bg_color: 0x171B22, bg_opa: COVER, radius: 24, border_width: 0, pad_all: 0, shadow_width: 0 }
+    - { id: st_tile, bg_color: 0x20252E, bg_opa: COVER, radius: 16, border_width: 0, pad_all: 0, shadow_width: 0, text_color: 0xF2F2F4 }
+    - { id: st_light, bg_color: 0x20252E, bg_opa: COVER, border_width: 2, border_color: 0x262C36, pad_all: 0, shadow_width: 0, text_color: 0x8A909A }
+    - { id: st_cold, bg_color: 0x16283A, bg_opa: COVER, border_color: 0x5AA9E6, text_color: 0x9FD0F5, shadow_color: 0x5AA9E6, shadow_width: 26, shadow_opa: 45%, shadow_spread: 1 }
+    - { id: st_on, bg_color: 0x3A2A1E, bg_opa: COVER, border_color: 0xF5B461, text_color: 0xFFD9B0, shadow_color: 0xF5B461, shadow_width: 26, shadow_opa: 45%, shadow_spread: 1 }
+    - { id: st_txt, text_color: 0xF2F2F4 }
+    - { id: st_mut, text_color: 0x8A909A }
+    - { id: st_dim, text_color: 0x5A606A }
+    - { id: st_sep, bg_color: 0x262C36, bg_opa: COVER, radius: 0, border_width: 0, pad_all: 0 }
+    - { id: st_track, bg_color: 0x20252E, bg_opa: COVER }
+    - { id: st_arctrack, arc_color: 0x20252E, arc_width: 24, bg_opa: TRANSP, border_width: 0, pad_all: 0 }
+    - { id: st_ring, bg_opa: TRANSP, border_width: 2, border_color: 0x262C36, pad_all: 0 }
+    - { id: st_rail, bg_opa: TRANSP, radius: 20, border_width: 0, shadow_width: 0, pad_all: 0, text_color: 0x8A909A }
+    - { id: st_railon, bg_color: 0x20252E, bg_opa: COVER, text_color: 0xE8845C }
+    - { id: st_railbox, bg_opa: TRANSP, radius: 0, pad_all: 0, border_width: 1, border_side: RIGHT, border_color: 0x262C36 }
+    - { id: st_banner, bg_color: 0x5A1612, bg_opa: COVER, radius: 18, border_width: 0, pad_all: 0, text_color: 0xFFD4CF }
+    - { id: st_bannerbtn, bg_color: 0x7A231D, bg_opa: COVER, radius: 12, border_width: 0, shadow_width: 0, text_color: 0xFFD4CF }
+    - { id: st_overlay, bg_color: 0x171B22, bg_opa: COVER, radius: 24, border_width: 3, border_color: 0xE8845C, pad_all: 0 }
+    - { id: st_ghost, bg_opa: TRANSP, border_width: 0, shadow_width: 0, pad_all: 0 }
+    - { id: st_modeon, bg_color: 0xE8845C, bg_opa: COVER, text_color: 0xFFFFFF }
+    - { id: st_trans, bg_opa: TRANSP, border_width: 0, pad_all: 0, radius: 0 }
+    # Schermata di riposo: ambra scuro di notte, chiaro di giorno (night_enter)
+    - { id: st_saver, text_color: 0x7A3A22 }
+    - { id: st_saver2, text_color: 0x7A3A22 }
+
+  # Riposo: dopo 30 s senza tocchi compare la schermata con ora, data,
+  # temperature e stato (ambra su nero col tema scuro, chiara col tema chiaro).
+  # Un tocco riporta alla Casa.
+  on_idle:
+    timeout: 30s
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(night_on);'
+          then:
+            - script.execute: { id: night_enter, night: !lambda 'return id(dark_mode);' }
+
+  # ═══════════════ TOP LAYER: barra laterale, barra in alto, pannelli ═══════════════
+  top_layer:
+    widgets:
+      # ── Barra di navigazione ──
+      - obj:
+          id: rail
+          x: 0
+          y: 0
+          width: 104
+          height: 800
+          styles: st_railbox
+          scrollable: false
+          clickable: false
+          hidden: true
+          widgets:
+            - label: { align: TOP_MID, y: 26, text: "\U000F11D4", text_font: i_l, text_color: 0xE8845C }
+            - button:
+                <<: &railbtn { x: 12, width: 80, height: 84, styles: st_rail, checked: { styles: st_railon } }
+                id: rb_0
+                y: 92
+                widgets:
+                  - label: { align: TOP_MID, y: 12, text: "\U000F02DE", text_font: i_m }
+                  - label: { align: BOTTOM_MID, y: -12, text: "Casa", text_font: f_s14 }
+                on_click: { script.execute: { id: nav, idx: 0 } }
+            - button:
+                <<: *railbtn
+                id: rb_1
+                y: 184
+                widgets:
+                  - label: { align: TOP_MID, y: 12, text: "\U000F051F", text_font: i_m }
+                  - label: { align: BOTTOM_MID, y: -12, text: "Risorse", text_font: f_s14 }
+                on_click: { script.execute: { id: nav, idx: 1 } }
+            - button:
+                <<: *railbtn
+                id: rb_2
+                y: 276
+                widgets:
+                  - label: { align: TOP_MID, y: 12, text: "\U000F0393", text_font: i_m }
+                  - label: { align: BOTTOM_MID, y: -12, text: "Clima", text_font: f_s14 }
+                on_click: { script.execute: { id: nav, idx: 2 } }
+            - button:
+                <<: *railbtn
+                id: rb_3
+                y: 368
+                widgets:
+                  - label: { align: TOP_MID, y: 12, text: "\U000F07FB", text_font: i_m }
+                  - label: { align: BOTTOM_MID, y: -12, text: "Veicolo", text_font: f_s14 }
+                on_click: { script.execute: { id: nav, idx: 3 } }
+            - button:
+                <<: *railbtn
+                id: rb_4
+                y: 460
+                widgets:
+                  - label: { align: TOP_MID, y: 12, text: "\U000F075A", text_font: i_m }
+                  - label: { align: BOTTOM_MID, y: -12, text: "Media", text_font: f_s14 }
+                on_click: { script.execute: { id: nav, idx: 4 } }
+            - button:
+                <<: *railbtn
+                id: rb_5
+                y: 552
+                widgets:
+                  - label: { align: TOP_MID, y: 12, text: "\U000F08BB", text_font: i_m }
+                  - label: { align: BOTTOM_MID, y: -12, text: "Sistema", text_font: f_s14 }
+                on_click: { script.execute: { id: nav, idx: 5 } }
+
+      # ── Barra in alto: ora, data, stato cellula / banner allarmi ──
+      - obj:
+          id: topbar
+          x: 124
+          y: 16
+          width: 1136
+          height: 64
+          styles: st_trans
+          scrollable: false
+          clickable: false
+          hidden: true
+          widgets:
+            - label: { id: hdr_clock, x: 0, y: 4, text: "--:--", text_font: f_b48, styles: st_txt }
+            - label: { id: hdr_dow, x: 150, y: 8, text: "", text_font: f_b20, styles: st_txt }
+            - label: { id: hdr_date, x: 150, y: 36, text: "", text_font: f_s15, styles: st_mut }
+            - obj:
+                id: chip_porta
+                <<: &chip { y: 8, height: 48, styles: st_card, scrollable: false, clickable: false }
+                x: 508
+                width: 150
+                widgets:
+                  - label: { id: chip_porta_i, x: 16, y: 11, text: "\U000F10AF", text_font: i_s, text_color: 0x8A909A }
+                  - label: { x: 48, y: 13, text: "Porta", styles: st_mut }
+            - obj:
+                id: chip_gas
+                <<: *chip
+                x: 672
+                width: 110
+                widgets:
+                  - label: { id: chip_gas_i, x: 16, y: 11, text: "\U000F0647", text_font: i_s, text_color: 0x8A909A }
+                  - label: { x: 48, y: 13, text: "Gas", styles: st_mut }
+            - obj:
+                id: chip_stato
+                <<: *chip
+                clickable: true
+                x: 796
+                width: 200
+                on_click:
+                  - lvgl.widget.update: { id: alarm_panel, hidden: false }
+                widgets:
+                  - label: { id: chip_stato_i, x: 16, y: 11, text: "\U000F0CC8", text_font: i_s, text_color: 0x34C759 }
+                  - label: { id: chip_stato_l, x: 48, y: 13, text: "Nessun allarme", styles: st_mut }
+            - obj:
+                id: banner
+                x: 280
+                y: 4
+                width: 716
+                height: 56
+                styles: st_banner
+                scrollable: false
+                hidden: true
+                widgets:
+                  - label: { x: 16, y: 15, text: "\U000F0026", text_font: i_s, text_color: 0xFF5A4E }
+                  - label: { id: banner_l, x: 52, y: 17, width: 506, text: "", long_mode: DOT }
+                  - button:
+                      x: 570
+                      y: 8
+                      width: 136
+                      height: 40
+                      styles: st_bannerbtn
+                      widgets:
+                        - label: { align: CENTER, text: "Ok, visto", text_font: f_s15 }
+                      on_click:
+                        - lambda: 'if (!id(alarm_text).empty()) id(alarm_seen) += (id(alarm_seen).empty() ? "|" : "") + id(alarm_text) + "|";'
+                        - script.execute: update_alarms
+            - button:
+                x: 1010
+                y: 4
+                width: 56
+                height: 56
+                radius: 28
+                styles: [st_card, st_mut]
+                widgets:
+                  - label: { align: CENTER, text: "\U000F0594", text_font: i_m }
+                on_click: { script.execute: { id: night_enter, night: true } }
+            - button:
+                x: 1080
+                y: 4
+                width: 56
+                height: 56
+                radius: 28
+                styles: [st_card, st_mut]
+                widgets:
+                  - label: { align: CENTER, text: "\U000F00DF", text_font: i_m }
+                on_click: { script.execute: toggle_brightness_panel }
+
+      # ── Pannello luminosita' (appare dall'icona, sparisce dopo 5 s) ──
+      - obj:
+          id: brightness_panel
+          x: 496
+          y: 92
+          width: 640
+          height: 76
+          styles: st_overlay
+          scrollable: false
+          hidden: true
+          widgets:
+            - label: { x: 22, y: 22, text: "\U000F00DF", text_font: i_s, styles: st_mut }
+            - slider:
+                id: slider_brightness
+                x: 70
+                y: 28
+                width: 460
+                height: 18
+                min_value: 30
+                max_value: 100
+                value: 100
+                styles: st_track
+                radius: 9
+                indicator: { bg_color: 0xE8845C, radius: 9 }
+                knob: { bg_color: 0xE8845C, radius: 14, pad_all: 6 }
+                # on_change: solo il tocco, non gli aggiornamenti da update_brightness
+                on_change:
+                  - globals.set: { id: display_brightness, value: !lambda 'return (int)x;' }
+                  - script.execute: update_brightness
+            - label: { id: brightness_pct, x: 550, y: 26, width: 70, text_align: RIGHT, text: "100%", styles: st_mut }
+
+      # ── Lista allarmi (si apre dal chip "Allarme visto") ──
+      - obj:
+          id: alarm_panel
+          x: 340
+          y: 92
+          width: 600
+          height: 420
+          styles: st_overlay
+          scrollable: false
+          hidden: true
+          widgets:
+            - label: { x: 28, y: 24, text: "\U000F0028", text_font: i_s, text_color: 0xE8845C }
+            - label: { x: 64, y: 22, text: "Allarmi", text_font: f_b26, styles: st_txt }
+            - label: { id: al_list, x: 28, y: 90, width: 544, height: 250, text: "Nessun allarme", styles: st_txt, long_mode: WRAP }
+            - button:
+                x: 28
+                y: 350
+                width: 544
+                height: 52
+                styles: st_tile
+                widgets:
+                  - label: { align: CENTER, text: "Chiudi", text_font: f_b20 }
+                on_click:
+                  - lvgl.widget.update: { id: alarm_panel, hidden: true }
+
+      # ── Limite della colonnina (si apre dalla riga Colonnina in Risorse) ──
+      - obj:
+          id: lim_panel
+          x: 340
+          y: 92
+          width: 600
+          height: 330
+          styles: st_overlay
+          scrollable: false
+          hidden: true
+          widgets:
+            - label: { x: 28, y: 24, text: "\U000F07E7", text_font: i_s, text_color: 0xE8845C }
+            - label: { x: 64, y: 22, text: "Limite colonnina", text_font: f_b26, styles: st_txt }
+            - label: { x: 28, y: 76, width: 544, text: "Quanti ampere dà la colonnina del campeggio? Sopra il 90% scatta l'avviso.", styles: st_mut, long_mode: WRAP }
+            - button:
+                <<: &limbtn { y: 150, width: 124, height: 72, styles: st_tile, checked: { styles: st_modeon } }
+                id: lim_4
+                x: 28
+                widgets: [label: { align: CENTER, text: "4 A", text_font: f_b26 }]
+                on_click: { homeassistant.service: { service: input_number.set_value, data: { entity_id: input_number.limite_colonnina, value: "4" } } }
+            - button:
+                <<: *limbtn
+                id: lim_6
+                x: 168
+                widgets: [label: { align: CENTER, text: "6 A", text_font: f_b26 }]
+                on_click: { homeassistant.service: { service: input_number.set_value, data: { entity_id: input_number.limite_colonnina, value: "6" } } }
+            - button:
+                <<: *limbtn
+                id: lim_10
+                x: 308
+                widgets: [label: { align: CENTER, text: "10 A", text_font: f_b26 }]
+                on_click: { homeassistant.service: { service: input_number.set_value, data: { entity_id: input_number.limite_colonnina, value: "10" } } }
+            - button:
+                <<: *limbtn
+                id: lim_16
+                x: 448
+                widgets: [label: { align: CENTER, text: "16 A", text_font: f_b26 }]
+                on_click: { homeassistant.service: { service: input_number.set_value, data: { entity_id: input_number.limite_colonnina, value: "16" } } }
+            - button:
+                x: 28
+                y: 254
+                width: 544
+                height: 52
+                styles: st_tile
+                widgets:
+                  - label: { align: CENTER, text: "Chiudi", text_font: f_b20 }
+                on_click:
+                  - lvgl.widget.update: { id: lim_panel, hidden: true }
+
+      # ── Checklist "Partenza" ──
+      - obj:
+          id: check_panel
+          x: 340
+          y: 92
+          width: 600
+          height: 620
+          styles: st_overlay
+          scrollable: false
+          hidden: true
+          widgets:
+            - label: { x: 28, y: 24, text: "\U000F08A8", text_font: i_s, text_color: 0xE8845C }
+            - label: { x: 64, y: 22, text: "Prima di partire", text_font: f_b26, styles: st_txt }
+            - label: { x: 28, y: 90, id: chk_0_i, text: "\U000F05E0", text_font: i_s }
+            - label: { x: 64, y: 92, id: chk_0_l, text: "Porta della cellula chiusa", styles: st_txt }
+            - label: { x: 28, y: 150, id: chk_1_i, text: "\U000F05E0", text_font: i_s }
+            - label: { x: 64, y: 152, id: chk_1_l, text: "Porte della cabina chiuse", styles: st_txt }
+            - label: { x: 28, y: 210, id: chk_2_i, text: "\U000F05E0", text_font: i_s }
+            - label: { x: 64, y: 212, id: chk_2_l, text: "Pompa dell'acqua spenta", styles: st_txt }
+            - label: { x: 28, y: 270, id: chk_3_i, text: "\U000F05E0", text_font: i_s }
+            - label: { x: 64, y: 272, id: chk_3_l, text: "Luce esterna spenta", styles: st_txt }
+            - label: { x: 28, y: 330, id: chk_4_i, text: "\U000F05E0", text_font: i_s }
+            - label: { x: 64, y: 332, id: chk_4_l, text: "Condizionatore spento", styles: st_txt }
+            - label: { x: 28, y: 390, id: chk_5_i, text: "\U000F05E0", text_font: i_s }
+            - label: { x: 64, y: 392, id: chk_5_l, text: "Nessuna fuga di gas", styles: st_txt }
+            - label: { x: 28, y: 450, id: chk_6_i, text: "\U000F05E0", text_font: i_s }
+            - label: { x: 64, y: 452, id: chk_6_l, text: "Frigo acceso", styles: st_txt }
+            - label: { x: 28, y: 506, width: 544, text: "Oblò, gradino e rubinetto del gas: controllali a vista.", text_font: f_s14, styles: st_mut, long_mode: WRAP }
+            - button:
+                x: 28
+                y: 548
+                width: 544
+                height: 52
+                styles: st_tile
+                widgets:
+                  - label: { align: CENTER, text: "Chiudi", text_font: f_b20 }
+                on_click:
+                  - lvgl.widget.update: { id: check_panel, hidden: true }
+
+      # ── Utenze 12V: conto alla rovescia dello stacco + avviso a utenze spente ──
+      # A utenze spente il velo trasparente copre le pagine (non la barra
+      # laterale): qualsiasi tocco, per esempio su una luce, riapre l'avviso.
+      # Lo gestisce update_utenze.
+      - obj:
+          id: ut_catch
+          x: 104
+          y: 0
+          width: 1176
+          height: 800
+          styles: st_trans
+          scrollable: false
+          hidden: true
+          on_click:
+            - lvgl.widget.update: { id: ut_pop, hidden: false }
+      - obj:
+          id: ut_pop
+          x: 0
+          y: 0
+          width: 1280
+          height: 800
+          bg_color: 0x000000
+          bg_opa: 70%
+          border_width: 0
+          radius: 0
+          scrollable: false
+          hidden: true
+          widgets:
+            - obj:
+                align: CENTER
+                width: 680
+                height: 520
+                styles: st_overlay
+                scrollable: false
+                widgets:
+                  - label: { id: utp_icon, align: TOP_MID, y: 24, text: "\U000F0425", text_font: i_l, text_color: 0xFF5A4E }
+                  - label: { id: utp_title, align: TOP_MID, y: 82, text: "Utenze 12V spente", text_font: f_b36, styles: st_txt }
+                  - label: { id: utp_sub, align: TOP_MID, y: 136, width: 600, text_align: CENTER, long_mode: WRAP, text: "", styles: st_mut }
+                  - label: { id: utp_num, align: TOP_MID, y: 200, text: "90", text_font: f_b200, text_color: 0xE8845C }
+                  - label: { id: utp_secs, align: TOP_MID, y: 420, text: "secondi", text_font: f_b26, styles: st_mut }
+                  - button:
+                      id: utp_on
+                      x: 40
+                      y: 290
+                      width: 600
+                      height: 80
+                      styles: [st_tile, st_modeon]
+                      widgets:
+                        - label: { align: CENTER, text: "Accendi le utenze", text_font: f_b26 }
+                      on_click: { script.execute: pin_open }
+                  - button:
+                      id: utp_close
+                      x: 40
+                      y: 400
+                      width: 600
+                      height: 64
+                      styles: st_tile
+                      widgets:
+                        - label: { align: CENTER, text: "Chiudi", text_font: f_b20 }
+                      on_click:
+                        - lvgl.widget.update: { id: ut_pop, hidden: true }
+
+      # ── Tastierino PIN utenze (sopra a tutto) ──
+      - obj:
+          id: pin_panel
+          x: 380
+          y: 55
+          width: 520
+          height: 690
+          styles: st_overlay
+          scrollable: false
+          hidden: true
+          widgets:
+            - label: { id: pin_title, align: TOP_MID, y: 18, text: "Utenze 12V", text_font: f_b26, styles: st_txt }
+            - label: { id: pin_msg, align: TOP_MID, y: 60, text: "Inserisci il PIN", styles: st_mut }
+            - label: { id: pin_dots, align: TOP_MID, y: 96, text: "", text_font: f_b48, text_color: 0xE8845C }
+            - button: { <<: &pinkey { width: 140, height: 92, styles: st_tile }, x: 38, y: 168, widgets: [label: { align: CENTER, text: "1", text_font: f_b36 }], on_click: { script.execute: { id: pin_key, d: "1" } } }
+            - button: { <<: *pinkey, x: 190, y: 168, widgets: [label: { align: CENTER, text: "2", text_font: f_b36 }], on_click: { script.execute: { id: pin_key, d: "2" } } }
+            - button: { <<: *pinkey, x: 342, y: 168, widgets: [label: { align: CENTER, text: "3", text_font: f_b36 }], on_click: { script.execute: { id: pin_key, d: "3" } } }
+            - button: { <<: *pinkey, x: 38, y: 272, widgets: [label: { align: CENTER, text: "4", text_font: f_b36 }], on_click: { script.execute: { id: pin_key, d: "4" } } }
+            - button: { <<: *pinkey, x: 190, y: 272, widgets: [label: { align: CENTER, text: "5", text_font: f_b36 }], on_click: { script.execute: { id: pin_key, d: "5" } } }
+            - button: { <<: *pinkey, x: 342, y: 272, widgets: [label: { align: CENTER, text: "6", text_font: f_b36 }], on_click: { script.execute: { id: pin_key, d: "6" } } }
+            - button: { <<: *pinkey, x: 38, y: 376, widgets: [label: { align: CENTER, text: "7", text_font: f_b36 }], on_click: { script.execute: { id: pin_key, d: "7" } } }
+            - button: { <<: *pinkey, x: 190, y: 376, widgets: [label: { align: CENTER, text: "8", text_font: f_b36 }], on_click: { script.execute: { id: pin_key, d: "8" } } }
+            - button: { <<: *pinkey, x: 342, y: 376, widgets: [label: { align: CENTER, text: "9", text_font: f_b36 }], on_click: { script.execute: { id: pin_key, d: "9" } } }
+            - button: { <<: *pinkey, x: 38, y: 480, widgets: [label: { align: CENTER, text: "C", text_font: f_b36 }], on_click: { script.execute: pin_clear } }
+            - button: { <<: *pinkey, x: 190, y: 480, widgets: [label: { align: CENTER, text: "0", text_font: f_b36 }], on_click: { script.execute: { id: pin_key, d: "0" } } }
+            - button: { <<: *pinkey, x: 342, y: 480, styles: [st_tile, st_modeon], widgets: [label: { align: CENTER, text: "OK", text_font: f_b26 }], on_click: { script.execute: pin_check } }
+            - button:
+                x: 38
+                y: 592
+                width: 444
+                height: 60
+                styles: st_tile
+                widgets:
+                  - label: { align: CENTER, text: "Annulla", text_font: f_b20 }
+                on_click: { script.execute: pin_close }
+
+  pages:
+    # ═══════════════ SPLASH ═══════════════
+    - id: page_splash
+      skip: true
+      bg_color: 0x0D1117
+      widgets:
+        - label: { align: CENTER, y: -67, text: "monitor", text_font: mont_76, text_color: 0xE8845C }
+        - label: { align: CENTER, y: 17, text: "camper", text_font: mont_76, text_color: 0xF0F0F0 }
+        - spinner:
+            align: CENTER
+            y: 167
+            width: 70
+            height: 73
+            spin_time: 1s
+            arc_length: 60deg
+            arc_color: 0x21262D
+            indicator: { arc_color: 0xE8845C }
+
+    # ═══════════════ CASA ═══════════════
+    - id: page_home
+      styles: st_page
+      widgets:
+        # ── Pianta con le 15 luci ──
+        - obj:
+            id: card_plan
+            x: 124
+            y: 96
+            width: 1136
+            height: 360
+            styles: st_card
+            scrollable: false
+            widgets:
+              - image: { id: plan_img, x: 20, y: 20, src: img_plan_dark }
+              # Porta d'ingresso della cellula (lato destro = in alto col muso a sinistra)
+              - obj: { id: door_mark, x: 370, y: 66, width: 62, height: 8, radius: 4, bg_color: 0x34C759, border_width: 0, clickable: false, scrollable: false }
+              # Bottoni luce: pianta ruotata di 180° (muso/mansarda a sinistra)
+              - button:
+                  <<: &lt { width: 52, height: 52, radius: 26, checkable: true, styles: st_light, checked: { styles: st_on } }
+                  id: lt_mans1
+                  x: 188
+                  y: 202
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F17C9", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Mans. 1", text_font: f_t11 }
+                  on_click: { homeassistant.service: { service: light.toggle, data: { entity_id: light.esp32_mansarda_luce_1 } } }
+              - button:
+                  <<: *lt
+                  id: lt_mans2
+                  x: 188
+                  y: 101
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F17C9", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Mans. 2", text_font: f_t11 }
+                  on_click: { homeassistant.service: { service: light.toggle, data: { entity_id: light.esp32_mansarda_luce_2 } } }
+              - button:
+                  <<: *lt
+                  id: lt_leddin
+                  x: 362
+                  y: 216
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F1051", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Led", text_font: f_t11 }
+                  on_click: { homeassistant.service: { service: light.toggle, data: { entity_id: light.kincony_kc868_a16_luce_9 } } }
+              - button:
+                  <<: *lt
+                  id: lt_tavolo
+                  x: 304
+                  y: 176
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F05BC", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Tavolo", text_font: f_t11 }
+                  on_click: { homeassistant.service: { service: light.toggle, data: { entity_id: light.shellyplus1_441793a44110_switch_0 } } }
+              - button:
+                  <<: *lt
+                  id: lt_princ
+                  x: 379
+                  y: 129
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F0769", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Princip.", text_font: f_t11 }
+                  on_click: { homeassistant.service: { service: light.toggle, data: { entity_id: light.kincony_kc868_a16_luce_1 } } }
+              - button:
+                  <<: *lt
+                  id: lt_panca
+                  x: 300
+                  y: 78
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F179B", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Panca", text_font: f_t11 }
+                  on_click: { homeassistant.service: { service: light.toggle, data: { entity_id: light.faretti_panca } } }
+              - button:
+                  <<: *lt
+                  id: lt_esterna
+                  x: 373
+                  y: 2
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F1054", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Esterna", text_font: f_t11 }
+                  on_click: { homeassistant.service: { service: light.toggle, data: { entity_id: light.kincony_kc868_a16_luce_12 } } }
+              - button:
+                  <<: *lt
+                  id: lt_cucina
+                  x: 435
+                  y: 193
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F04DE", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Cucina", text_font: f_t11 }
+                  on_click: { homeassistant.service: { service: light.toggle, data: { entity_id: light.kincony_kc868_a16_luce_3 } } }
+              - button:
+                  <<: *lt
+                  id: lt_ledcuc
+                  x: 454
+                  y: 256
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F1051", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Led", text_font: f_t11 }
+                  on_click: { homeassistant.service: { service: light.toggle, data: { entity_id: light.esp32_cucina_led_switch } } }
+              - button:
+                  <<: *lt
+                  id: lt_corr
+                  x: 492
+                  y: 144
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F0583", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Corrid.", text_font: f_t11 }
+                  on_click: { homeassistant.service: { service: light.toggle, data: { entity_id: light.kincony_kc868_a16_luce_2 } } }
+              - button:
+                  <<: *lt
+                  id: lt_doccia
+                  x: 537
+                  y: 222
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F09A1", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Doccia", text_font: f_t11 }
+                  on_click: { homeassistant.service: { service: light.toggle, data: { entity_id: light.shelly1_34945479f8e1 } } }
+              - button:
+                  <<: *lt
+                  id: lt_bagno
+                  x: 531
+                  y: 82
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F09AB", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Bagno", text_font: f_t11 }
+                  on_click: { homeassistant.service: { service: light.toggle, data: { entity_id: light.kincony_kc868_a16_luce_4 } } }
+              - button:
+                  <<: *lt
+                  id: lt_letto1
+                  x: 660
+                  y: 230
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F17D0", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Letto 1", text_font: f_t11 }
+                  on_click: { homeassistant.service: { service: light.toggle, data: { entity_id: light.esp32_letto_luce_letto_1 } } }
+              - button:
+                  <<: *lt
+                  id: lt_letto2
+                  x: 660
+                  y: 73
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F17D0", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Letto 2", text_font: f_t11 }
+                  on_click: { homeassistant.service: { service: light.toggle, data: { entity_id: light.esp32_letto_luce_letto_2 } } }
+              - button:
+                  <<: *lt
+                  id: lt_gavone
+                  x: 746
+                  y: 146
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F12D3", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Gavone", text_font: f_t11 }
+                  on_click: { homeassistant.service: { service: light.toggle, data: { entity_id: light.shellyplus1_d0ef76d9cac0_switch_0 } } }
+              # Frigo: solo stato, blu = acceso. Vevor nel gavone, Domotic sul simbolo vicino alla porta
+              - obj:
+                  <<: &fr { width: 52, height: 52, radius: 26, scrollable: false, styles: st_light, checked: { styles: st_cold } }
+                  id: fr_vevor
+                  x: 746
+                  y: 88
+                  on_click:
+                    - if:
+                        condition:
+                          lambda: 'return id(ha_frigo_state).state == "off";'
+                        then:
+                          - homeassistant.service: { service: climate.turn_on, data: { entity_id: climate.vevor_c50_fridge } }
+                        else:
+                          - homeassistant.service: { service: climate.turn_off, data: { entity_id: climate.vevor_c50_fridge } }
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F028F", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Vevor", text_font: f_t11 }
+              - obj:
+                  <<: *fr
+                  id: fr_dom
+                  clickable: false
+                  x: 435
+                  y: 69
+                  widgets:
+                    - label: { align: TOP_MID, y: 7, text: "\U000F028F", text_font: i_xs }
+                    - label: { align: BOTTOM_MID, y: -6, text: "Frigo", text_font: f_t11 }
+
+              # ── Colonna destra: stato della casa ──
+              - label: { x: 818, y: 18, text: "\U000F11D4", text_font: i_s, text_color: 0xE8845C }
+              - label: { x: 852, y: 22, text: "LA CASA", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { id: lights_count, x: 818, y: 56, text: "--", text_font: f_b20, text_color: 0xF5B461 }
+              - label: { x: 818, y: 98, text: "\U000F156D", text_font: i_s, styles: st_mut }
+              - label: { x: 852, y: 100, text: "Dinette", styles: st_txt }
+              - label: { id: h_t_din, x: 1000, y: 99, width: 116, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 818, y: 138, width: 298, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 818, y: 148, text: "\U000F0097", text_font: i_s, styles: st_mut }
+              - label: { x: 852, y: 150, text: "Mansarda", styles: st_txt }
+              - label: { id: h_t_mans, x: 1000, y: 149, width: 116, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 818, y: 188, width: 298, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 818, y: 198, text: "\U000F0099", text_font: i_s, styles: st_mut }
+              - label: { x: 852, y: 200, text: "Letto", styles: st_txt }
+              - label: { id: h_t_letto, x: 1000, y: 199, width: 116, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 818, y: 238, width: 298, height: 1, styles: st_sep, clickable: false }
+              - label: { id: h_porta_i, x: 818, y: 248, text: "\U000F10AF", text_font: i_s, text_color: 0x8A909A }
+              - label: { x: 852, y: 250, text: "Porta", styles: st_txt }
+              - label: { id: h_porta_v, x: 980, y: 249, width: 136, text_align: RIGHT, text: "--", text_font: f_b20, text_color: 0x8A909A }
+              - button:
+                  x: 818
+                  y: 286
+                  width: 298
+                  height: 56
+                  styles: [st_tile, st_modeon]
+                  widgets:
+                    - label: { align: CENTER, x: -72, text: "\U000F0E50", text_font: i_s }
+                    - label: { align: CENTER, x: 16, text: "Spegni tutte", text_font: f_b20 }
+                  on_click:
+                    - homeassistant.service:
+                        service: light.turn_off
+                        data:
+                          entity_id: "light.kincony_kc868_a16_luce_1, light.shellyplus1_441793a44110_switch_0, light.faretti_panca, light.kincony_kc868_a16_luce_9, light.kincony_kc868_a16_luce_2, light.kincony_kc868_a16_luce_3, light.esp32_cucina_led_switch, light.kincony_kc868_a16_luce_4, light.shelly1_34945479f8e1, light.shellyplus1_d0ef76d9cac0_switch_0, light.kincony_kc868_a16_luce_12, light.esp32_mansarda_luce_1, light.esp32_mansarda_luce_2, light.esp32_letto_luce_letto_1, light.esp32_letto_luce_letto_2"
+
+        # ── Risorse (percentuale in grande, stima in piccolo) ──
+        - obj:
+            x: 124
+            y: 472
+            width: 620
+            height: 208
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F051F", text_font: i_s, text_color: 0xE8845C }
+              - label: { x: 52, y: 22, text: "RISORSE", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { id: hm_head, x: 180, y: 20, width: 420, text_align: RIGHT, text: "", styles: st_txt, long_mode: DOT }
+              # Batteria
+              - label: { x: 20, y: 68, text: "\U000F0080", text_font: i_s, text_color: 0x34C759 }
+              - label: { x: 48, y: 71, text: "Batteria", text_font: f_s15, styles: st_mut }
+              - label: { id: hm_batt_v, x: 20, y: 100, text: "--", text_font: f_b36, styles: st_txt }
+              - bar: { id: hm_batt_bar, x: 20, y: 148, width: 130, height: 10, value: 0, styles: st_track, radius: 5, indicator: { bg_color: 0x34C759, radius: 5 } }
+              - label: { id: hm_batt_d, x: 20, y: 166, text: "", text_font: f_s14, styles: st_mut }
+              # Acqua
+              - label: { x: 171, y: 68, text: "\U000F058C", text_font: i_s, text_color: 0x5AA9E6 }
+              - label: { x: 199, y: 71, text: "Acqua", text_font: f_s15, styles: st_mut }
+              - label: { id: hm_acq_v, x: 171, y: 100, text: "--", text_font: f_b36, styles: st_txt }
+              - bar: { id: hm_acq_bar, x: 171, y: 148, width: 130, height: 10, value: 0, styles: st_track, radius: 5, indicator: { bg_color: 0x5AA9E6, radius: 5 } }
+              - label: { id: hm_acq_d, x: 171, y: 166, text: "", text_font: f_s14, styles: st_mut }
+              # Gas
+              - label: { x: 322, y: 68, text: "\U000F0647", text_font: i_s, text_color: 0xF0A500 }
+              - label: { x: 350, y: 71, text: "Gas", text_font: f_s15, styles: st_mut }
+              - label: { id: hm_gas_v, x: 322, y: 100, text: "--", text_font: f_b36, styles: st_txt }
+              - bar: { id: hm_gas_bar, x: 322, y: 148, width: 130, height: 10, value: 0, styles: st_track, radius: 5, indicator: { bg_color: 0xF0A500, radius: 5 } }
+              - label: { id: hm_gas_d, x: 322, y: 166, text: "", text_font: f_s14, styles: st_mut }
+              # Grigie: stima dai consumi delle chiare, riallineata dalla sonda di pieno
+              - label: { x: 473, y: 68, text: "\U000F1855", text_font: i_s, text_color: 0xA08868 }
+              - label: { x: 501, y: 71, text: "Grigie", text_font: f_s15, styles: st_mut }
+              - label: { id: hm_gri_v, x: 473, y: 100, text: "--", text_font: f_b36, styles: st_txt }
+              - bar: { id: hm_gri_bar, x: 473, y: 148, width: 130, height: 10, value: 0, styles: st_track, radius: 5, indicator: { bg_color: 0xA08868, radius: 5 } }
+              - label: { id: hm_gri_d, x: 473, y: 166, text: "", text_font: f_s14, styles: st_mut }
+
+        # ── Dentro / fuori ──
+        - obj:
+            x: 760
+            y: 472
+            width: 250
+            height: 208
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F0F55", text_font: i_s, text_color: 0xE8845C }
+              - label: { x: 52, y: 22, text: "DENTRO", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { id: dentro_ur, x: 150, y: 20, width: 80, text_align: RIGHT, text: "", styles: st_mut }
+              - label: { id: dentro_v, x: 20, y: 58, text: "--", text_font: f_b56, styles: st_txt }
+              - label: { id: meteo_ico, x: 18, y: 146, text: "\U000F0595", text_font: i_m, text_color: 0xF0A500 }
+              - label: { id: fuori_v, x: 58, y: 153, width: 176, height: 22, text: "--", styles: st_mut, long_mode: DOT }
+
+        # ── Stato impianti (tap su Pompa = accende/spegne) ──
+        - obj:
+            x: 1026
+            y: 472
+            width: 234
+            height: 208
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 18, y: 14, text: "\U000F0238", text_font: i_s, styles: st_dim }
+              - label: { x: 52, y: 16, text: "Webasto", styles: st_txt }
+              - label: { id: st_web_v, x: 110, y: 17, width: 106, text_align: RIGHT, text: "n.c.", text_font: f_s15, styles: st_mut }
+              - obj: { x: 18, y: 52, width: 198, height: 1, styles: st_sep, clickable: false }
+              - label: { id: st_clima_i, x: 18, y: 64, text: "\U000F001B", text_font: i_s, styles: st_dim }
+              - label: { x: 52, y: 66, text: "Clima", styles: st_txt }
+              - label: { id: st_clima_v, x: 100, y: 67, width: 116, text_align: RIGHT, text: "--", text_font: f_s15, styles: st_mut }
+              - obj: { x: 18, y: 102, width: 198, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 18, y: 114, text: "\U000F028F", text_font: i_s, text_color: 0x5AA9E6 }
+              - label: { x: 52, y: 116, text: "Frigo", styles: st_txt }
+              - label: { id: st_frigo_v, x: 100, y: 117, width: 116, text_align: RIGHT, text: "--", text_font: f_s15, styles: st_mut }
+              - obj: { x: 18, y: 152, width: 198, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 18, y: 164, text: "\U000F058F", text_font: i_s, text_color: 0x5AA9E6 }
+              - label: { x: 52, y: 166, text: "Pompa", styles: st_txt }
+              - label: { id: st_pompa_v, x: 110, y: 165, width: 106, text_align: RIGHT, text: "--", text_font: f_b20, text_color: 0x8A909A }
+              - button:
+                  x: 0
+                  y: 154
+                  width: 234
+                  height: 54
+                  styles: st_ghost
+                  on_click: { homeassistant.service: { service: switch.toggle, data: { entity_id: switch.esp32_serbatoio_acqua_pompa } } }
+
+        # ── Scene ──
+        - button:
+            <<: &scene { y: 696, width: 214, height: 88, styles: [st_card, st_txt] }
+            x: 124
+            widgets:
+              - label: { align: LEFT_MID, x: 24, text: "\U000F059C", text_font: i_m, text_color: 0xE8845C }
+              - label: { align: LEFT_MID, x: 68, text: "Buongiorno", text_font: f_b20 }
+            on_click: { homeassistant.service: { service: script.turn_on, data: { entity_id: script.camper_buongiorno } } }
+        - button:
+            <<: *scene
+            x: 354
+            widgets:
+              - label: { align: LEFT_MID, x: 40, text: "\U000F0A48", text_font: i_m, text_color: 0xE8845C }
+              - label: { align: LEFT_MID, x: 90, text: "Esco", text_font: f_b20 }
+            on_click: { homeassistant.service: { service: input_boolean.turn_on, data: { entity_id: input_boolean.esco_camper } } }
+        # Cena: faretti del tavolo e della panca, luce principale spenta
+        - button:
+            <<: *scene
+            x: 584
+            widgets:
+              - label: { align: LEFT_MID, x: 40, text: "\U000F0A70", text_font: i_m, text_color: 0xE8845C }
+              - label: { align: LEFT_MID, x: 90, text: "Cena", text_font: f_b20 }
+            on_click:
+              - homeassistant.service:
+                  service: light.turn_on
+                  data: { entity_id: "light.shellyplus1_441793a44110_switch_0, light.faretti_panca" }
+              - homeassistant.service:
+                  service: light.turn_off
+                  data: { entity_id: light.kincony_kc868_a16_luce_1 }
+        # Notte: script buonanotte di HA + schermata Notte sul pannello
+        - button:
+            <<: *scene
+            x: 814
+            widgets:
+              - label: { align: LEFT_MID, x: 40, text: "\U000F0594", text_font: i_m, text_color: 0xE8845C }
+              - label: { align: LEFT_MID, x: 90, text: "Notte", text_font: f_b20 }
+            on_click:
+              - homeassistant.service: { service: script.turn_on, data: { entity_id: script.camper_buonanotte } }
+              - script.execute: { id: night_enter, night: true }
+        - button:
+            <<: *scene
+            x: 1044
+            width: 216
+            widgets:
+              - label: { align: LEFT_MID, x: 28, text: "\U000F08A8", text_font: i_m, text_color: 0xE8845C }
+              - label: { align: LEFT_MID, x: 74, text: "Partenza", text_font: f_b20 }
+            on_click:
+              - script.execute: update_checklist
+              - lvgl.widget.update: { id: check_panel, hidden: false }
+
+    # ═══════════════ RISORSE ═══════════════
+    - id: page_risorse
+      styles: st_page
+      widgets:
+        - obj:
+            x: 124
+            y: 96
+            width: 1136
+            height: 112
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 26, y: 34, text: "\U000F051F", text_font: i_l, text_color: 0xE8845C }
+              - label: { x: 96, y: 18, text: "PUOI RESTARE FERMO", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { id: rs_head, x: 96, y: 40, width: 600, text: "--", text_font: f_b48, styles: st_txt, long_mode: DOT }
+              - label: { id: rs_para, x: 700, y: 20, width: 416, text: "", styles: st_mut, long_mode: WRAP }
+
+        # Quattro card risorsa: header, % grande, barra, 3 righe
+        - obj:
+            <<: &rescard { y: 224, width: 272, height: 292, styles: st_card, scrollable: false }
+            x: 124
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F0080", text_font: i_s, text_color: 0x34C759 }
+              - label: { x: 52, y: 22, text: "BATTERIA", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { id: rs_batt_u, x: 150, y: 20, width: 102, text_align: RIGHT, text: "", styles: st_mut }
+              - label: { id: rs_batt_v, x: 20, y: 52, text: "--", text_font: f_b56, styles: st_txt }
+              - bar: { id: rs_batt_bar, x: 20, y: 122, width: 232, height: 18, value: 0, styles: st_track, radius: 9, indicator: { bg_color: 0x34C759, radius: 9 } }
+              - label: { x: 20, y: 162, text: "Stima", styles: st_mut }
+              - label: { id: rs_batt_k1, x: 110, y: 161, width: 142, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 196, width: 232, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 208, text: "Adesso", styles: st_mut }
+              - label: { id: rs_batt_k2, x: 110, y: 207, width: 142, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 242, width: 232, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 254, text: "Al giorno", styles: st_mut }
+              - label: { id: rs_batt_k3, x: 110, y: 253, width: 142, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+        - obj:
+            <<: *rescard
+            x: 412
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F058C", text_font: i_s, text_color: 0x5AA9E6 }
+              - label: { x: 52, y: 22, text: "ACQUA", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { id: rs_acq_u, x: 150, y: 20, width: 102, text_align: RIGHT, text: "", styles: st_mut }
+              - label: { id: rs_acq_v, x: 20, y: 52, text: "--", text_font: f_b56, styles: st_txt }
+              - bar: { id: rs_acq_bar, x: 20, y: 122, width: 232, height: 18, value: 0, styles: st_track, radius: 9, indicator: { bg_color: 0x5AA9E6, radius: 9 } }
+              - label: { x: 20, y: 162, text: "Stima", styles: st_mut }
+              - label: { id: rs_acq_k1, x: 110, y: 161, width: 142, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 196, width: 232, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 208, text: "Pompa", styles: st_mut }
+              - label: { id: rs_acq_k2, x: 110, y: 207, width: 142, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 242, width: 232, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 254, text: "Al giorno", styles: st_mut }
+              - label: { id: rs_acq_k3, x: 110, y: 253, width: 142, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+        - obj:
+            <<: *rescard
+            x: 700
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F0647", text_font: i_s, text_color: 0xF0A500 }
+              - label: { x: 52, y: 22, text: "GAS", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { id: rs_gas_u, x: 150, y: 20, width: 102, text_align: RIGHT, text: "", styles: st_mut }
+              - label: { id: rs_gas_v, x: 20, y: 52, text: "--", text_font: f_b56, styles: st_txt }
+              - bar: { id: rs_gas_bar, x: 20, y: 122, width: 232, height: 18, value: 0, styles: st_track, radius: 9, indicator: { bg_color: 0xF0A500, radius: 9 } }
+              - label: { x: 20, y: 162, text: "Stima", styles: st_mut }
+              - label: { id: rs_gas_k1, x: 110, y: 161, width: 142, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 196, width: 232, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 208, text: "Fuga", styles: st_mut }
+              - label: { id: rs_gas_k2, x: 110, y: 207, width: 142, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 242, width: 232, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 254, text: "Al giorno", styles: st_mut }
+              - label: { id: rs_gas_k3, x: 110, y: 253, width: 142, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+        - obj:
+            <<: *rescard
+            x: 988
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F1855", text_font: i_s, text_color: 0xA08868 }
+              - label: { x: 52, y: 22, text: "GRIGIE", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { id: rs_gri_u, x: 150, y: 20, width: 102, text_align: RIGHT, text: "", styles: st_mut }
+              - label: { id: rs_gri_v, x: 20, y: 52, text: "--", text_font: f_b56, styles: st_txt }
+              - bar: { id: rs_gri_bar, x: 20, y: 122, width: 232, height: 18, value: 0, styles: st_track, radius: 9, indicator: { bg_color: 0xA08868, radius: 9 } }
+              - label: { x: 20, y: 162, text: "Sonde", styles: st_mut }
+              - label: { id: rs_gri_k1, x: 110, y: 161, width: 142, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 196, width: 232, height: 1, styles: st_sep, clickable: false }
+              # Per gli scarichi fatti prima che l'acqua arrivi alla sonda di pieno
+              - button:
+                  x: 20
+                  y: 212
+                  width: 232
+                  height: 64
+                  styles: st_tile
+                  widgets:
+                    - label: { align: CENTER, text: "Svuotate (tieni premuto)", text_font: f_s15 }
+                  on_long_press:
+                    - lambda: 'id(grey_est_l) = 0; id(update_grey).execute();'
+
+        # Ricarica
+        - obj:
+            x: 124
+            y: 532
+            width: 380
+            height: 252
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F140B", text_font: i_s, text_color: 0x34C759 }
+              - label: { x: 52, y: 22, text: "RICARICA", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { x: 20, y: 56, text: "\U000F06A5", text_font: i_s, styles: st_mut }
+              - label: { x: 56, y: 58, text: "Sorgente", styles: st_txt }
+              - label: { id: rc_src, x: 170, y: 58, width: 190, text_align: RIGHT, text: "--", styles: st_mut, long_mode: DOT }
+              - obj: { x: 20, y: 92, width: 340, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 102, text: "\U000F0084", text_font: i_s, styles: st_mut }
+              - label: { x: 56, y: 104, text: "Caricabatterie", styles: st_txt }
+              - label: { id: rc_mode, x: 200, y: 104, width: 160, text_align: RIGHT, text: "--", styles: st_mut, long_mode: DOT }
+              - obj: { x: 20, y: 138, width: 340, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 148, text: "\U000F1904", text_font: i_s, text_color: 0xF0A500 }
+              - label: { x: 56, y: 150, text: "Batteria", styles: st_txt }
+              - label: { id: rc_pow, x: 200, y: 148, width: 160, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 184, width: 340, height: 1, styles: st_sep, clickable: false }
+              # Colonnina: W · A / limite, barra verso il limite; il tocco apre la scelta del limite
+              - label: { id: rc_rete_i, x: 20, y: 194, text: "\U000F07E7", text_font: i_s, text_color: 0x5A606A }
+              - label: { x: 56, y: 196, text: "Colonnina", styles: st_txt }
+              - obj:
+                  x: 170
+                  y: 192
+                  width: 190
+                  height: 28
+                  styles: st_trans
+                  scrollable: false
+                  clickable: false
+                  layout: { type: flex, flex_flow: ROW, flex_align_main: END, flex_align_cross: END, pad_column: 6 }
+                  widgets:
+                    - label: { id: rc_rete_w, text: "", text_font: f_s14, styles: st_mut, hidden: true }
+                    - label: { id: rc_rete_a, text: "", text_font: f_b20, styles: st_txt, hidden: true }
+                    - label: { id: rc_rete_l, text: "", styles: st_mut, hidden: true }
+                    - label: { id: rc_rete_s, text: "non collegata", styles: st_mut }
+              - bar: { id: rc_rete_bar, x: 20, y: 230, width: 340, height: 8, value: 0, styles: st_track, radius: 4, indicator: { bg_color: 0x34C759, radius: 4 } }
+              - obj:
+                  x: 0
+                  y: 186
+                  width: 380
+                  height: 66
+                  styles: st_trans
+                  scrollable: false
+                  on_click:
+                    - lvgl.widget.update: { id: lim_panel, hidden: false }
+
+        # Andamento ultimi 3 giorni (campioni orari salvati sul pannello)
+        - obj:
+            x: 520
+            y: 532
+            width: 740
+            height: 252
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F012A", text_font: i_s, text_color: 0xE8845C }
+              - label: { x: 52, y: 22, text: "ULTIMI 3 GIORNI", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - obj: { x: 420, y: 29, width: 14, height: 4, radius: 2, bg_color: 0x34C759, border_width: 0, clickable: false }
+              - label: { x: 440, y: 22, text: "Batteria", text_font: f_s14, styles: st_mut }
+              - obj: { x: 530, y: 29, width: 14, height: 4, radius: 2, bg_color: 0x5AA9E6, border_width: 0, clickable: false }
+              - label: { x: 550, y: 22, text: "Acqua", text_font: f_s14, styles: st_mut }
+              - obj: { x: 626, y: 29, width: 14, height: 4, radius: 2, bg_color: 0xF0A500, border_width: 0, clickable: false }
+              - label: { x: 646, y: 22, text: "Gas", text_font: f_s14, styles: st_mut }
+              - obj:
+                  x: 20
+                  y: 60
+                  width: 700
+                  height: 160
+                  styles: st_trans
+                  scrollable: false
+                  clickable: false
+                  widgets:
+                    - obj: { x: 0, y: 0, width: 700, height: 1, styles: st_sep, clickable: false }
+                    - obj: { x: 0, y: 80, width: 700, height: 1, styles: st_sep, clickable: false }
+                    - obj: { x: 0, y: 159, width: 700, height: 1, styles: st_sep, clickable: false }
+                    - obj: { x: 233, y: 0, width: 1, height: 160, styles: st_sep, clickable: false }
+                    - obj: { x: 466, y: 0, width: 1, height: 160, styles: st_sep, clickable: false }
+                    - line: { id: ch_gas, x: 0, y: 0, points: [{ x: 0, y: 159 }, { x: 1, y: 159 }], line_width: 3, line_color: 0xF0A500, line_rounded: true }
+                    - line: { id: ch_acq, x: 0, y: 0, points: [{ x: 0, y: 159 }, { x: 1, y: 159 }], line_width: 3, line_color: 0x5AA9E6, line_rounded: true }
+                    - line: { id: ch_batt, x: 0, y: 0, points: [{ x: 0, y: 159 }, { x: 1, y: 159 }], line_width: 3, line_color: 0x34C759, line_rounded: true }
+              - label: { x: 20, y: 226, text: "3 giorni fa", text_font: f_s14, styles: st_dim }
+              - label: { x: 256, y: 226, text: "2 giorni fa", text_font: f_s14, styles: st_dim }
+              - label: { x: 489, y: 226, text: "ieri", text_font: f_s14, styles: st_dim }
+              - label: { x: 680, y: 226, text: "ora", text_font: f_s14, styles: st_dim }
+
+    # ═══════════════ CLIMA ═══════════════
+    - id: page_clima
+      styles: st_page
+      widgets:
+        # ── Frigo Vevor ──
+        - obj:
+            x: 124
+            y: 96
+            width: 402
+            height: 688
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F028F", text_font: i_s, text_color: 0x5AA9E6 }
+              - label: { x: 52, y: 22, text: "FRIGO VEVOR", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { id: fr_state, x: 250, y: 20, width: 132, text_align: RIGHT, text: "--", styles: st_mut }
+              - arc:
+                  <<: &dial { x: 36, y: 70, width: 330, height: 330, adjustable: false, clickable: false, styles: st_arctrack, knob: { bg_opa: TRANSP, pad_all: 0 } }
+                  id: fr_arc
+                  min_value: -20
+                  max_value: 20
+                  value: 4
+                  indicator: { arc_color: 0x5AA9E6, arc_width: 24 }
+              - label: { x: 36, y: 172, width: 330, text_align: CENTER, text: "Impostato", text_font: f_s15, styles: st_mut }
+              - label: { id: fr_set, x: 36, y: 196, width: 330, text_align: CENTER, text: "--", text_font: f_b76, styles: st_txt }
+              - label: { id: fr_now, x: 36, y: 290, width: 330, text_align: CENTER, text: "", text_font: f_s15, styles: st_mut }
+              - button:
+                  <<: &pm { y: 440, width: 173, height: 64, styles: st_tile }
+                  x: 20
+                  widgets: [label: { align: CENTER, text: "-", text_font: f_b36 }]
+                  on_click:
+                    - homeassistant.service:
+                        service: climate.set_temperature
+                        data:
+                          entity_id: climate.vevor_c50_fridge
+                          temperature: !lambda 'return ui::fmt(std::fmax(-20.0f, id(frigo_target) - 1.0f), 0);'
+              - button:
+                  <<: *pm
+                  x: 209
+                  widgets: [label: { align: CENTER, text: "+", text_font: f_b36 }]
+                  on_click:
+                    - homeassistant.service:
+                        service: climate.set_temperature
+                        data:
+                          entity_id: climate.vevor_c50_fridge
+                          temperature: !lambda 'return ui::fmt(std::fmin(20.0f, id(frigo_target) + 1.0f), 0);'
+              - button:
+                  <<: &mode { y: 604, width: 112, height: 64, styles: st_tile, checked: { styles: st_modeon } }
+                  id: fr_eco
+                  x: 20
+                  widgets:
+                    - label: { align: CENTER, x: -20, text: "\U000F032A", text_font: i_s }
+                    - label: { align: CENTER, x: 16, text: "Eco", text_font: f_s15 }
+                  on_click:
+                    - homeassistant.service: { service: climate.set_preset_mode, data: { entity_id: climate.vevor_c50_fridge, preset_mode: eco } }
+              - button:
+                  <<: *mode
+                  id: fr_boost
+                  x: 145
+                  widgets:
+                    - label: { align: CENTER, x: -24, text: "\U000F14DF", text_font: i_s }
+                    - label: { align: CENTER, x: 14, text: "Boost", text_font: f_s15 }
+                  on_click:
+                    - homeassistant.service: { service: climate.set_preset_mode, data: { entity_id: climate.vevor_c50_fridge, preset_mode: boost } }
+              - button:
+                  <<: *mode
+                  id: fr_onoff
+                  x: 270
+                  widgets:
+                    - label: { align: CENTER, x: -30, text: "\U000F0425", text_font: i_s }
+                    - label: { id: fr_onoff_l, align: CENTER, x: 12, text: "--", text_font: f_s15 }
+                  on_click:
+                    - if:
+                        condition:
+                          lambda: 'return id(ha_frigo_state).state == "off";'
+                        then:
+                          - homeassistant.service: { service: climate.turn_on, data: { entity_id: climate.vevor_c50_fridge } }
+                        else:
+                          - homeassistant.service: { service: climate.turn_off, data: { entity_id: climate.vevor_c50_fridge } }
+
+        # ── Condizionatore (Dometic via IR, solo con 230V) ──
+        - obj:
+            x: 542
+            y: 96
+            width: 402
+            height: 688
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F001B", text_font: i_s, text_color: 0xE8845C }
+              - label: { x: 52, y: 22, text: "CONDIZIONATORE", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { id: ac_avail, x: 250, y: 20, width: 132, text_align: RIGHT, text: "--", styles: st_mut }
+              - arc:
+                  <<: *dial
+                  id: ac_arc
+                  min_value: 18
+                  max_value: 30
+                  value: 25
+                  indicator: { arc_color: 0x5A606A, arc_width: 24 }
+              - label: { id: ac_mode_l, x: 36, y: 172, width: 330, text_align: CENTER, text: "--", text_font: f_s15, styles: st_mut }
+              - label: { id: ac_set, x: 36, y: 196, width: 330, text_align: CENTER, text: "--", text_font: f_b76, styles: st_txt }
+              - label: { id: ac_now, x: 36, y: 290, width: 330, text_align: CENTER, text: "", text_font: f_s15, styles: st_mut }
+              - button:
+                  <<: *pm
+                  x: 20
+                  widgets: [label: { align: CENTER, text: "-", text_font: f_b36 }]
+                  on_click:
+                    - homeassistant.service:
+                        service: climate.set_temperature
+                        data:
+                          entity_id: climate.climatizzatore_camper
+                          temperature: !lambda 'return ui::fmt(std::fmax(18.0f, id(clima_target) - 1.0f), 0);'
+              - button:
+                  <<: *pm
+                  x: 209
+                  widgets: [label: { align: CENTER, text: "+", text_font: f_b36 }]
+                  on_click:
+                    - homeassistant.service:
+                        service: climate.set_temperature
+                        data:
+                          entity_id: climate.climatizzatore_camper
+                          temperature: !lambda 'return ui::fmt(std::fmin(30.0f, id(clima_target) + 1.0f), 0);'
+              - button:
+                  <<: *mode
+                  id: ac_cool
+                  x: 20
+                  widgets:
+                    - label: { align: CENTER, x: -36, text: "\U000F0717", text_font: i_s }
+                    - label: { align: CENTER, x: 12, text: "Auto", text_font: f_s15 }
+                  on_click:
+                    - homeassistant.service: { service: climate.set_hvac_mode, data: { entity_id: climate.climatizzatore_camper, hvac_mode: cool } }
+              # manual: thermostat off first (it would switch the AC off below target), then the IR switch on
+              - button:
+                  <<: *mode
+                  id: ac_man
+                  x: 145
+                  widgets:
+                    - label: { align: CENTER, x: -36, text: "\U000F0210", text_font: i_s }
+                    - label: { align: CENTER, x: 12, text: "Manuale", text_font: f_s15 }
+                  on_click:
+                    - homeassistant.service: { service: climate.set_hvac_mode, data: { entity_id: climate.climatizzatore_camper, hvac_mode: "off" } }
+                    - homeassistant.service: { service: switch.turn_on, data: { entity_id: switch.climatizzatore } }
+              - button:
+                  <<: *mode
+                  id: ac_off
+                  x: 270
+                  widgets:
+                    - label: { align: CENTER, x: -30, text: "\U000F0425", text_font: i_s }
+                    - label: { align: CENTER, x: 12, text: "Spegni", text_font: f_s15 }
+                  on_click:
+                    - homeassistant.service: { service: climate.set_hvac_mode, data: { entity_id: climate.climatizzatore_camper, hvac_mode: "off" } }
+                    - homeassistant.service: { service: switch.turn_off, data: { entity_id: switch.climatizzatore } }
+
+        # ── Webasto: stato da HA (ESP32 Webasto dedicato) ──
+        - obj:
+            x: 960
+            y: 96
+            width: 300
+            height: 300
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F0238", text_font: i_s, text_color: 0xFF5A4E }
+              - label: { x: 52, y: 22, text: "WEBASTO", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { id: lbl_webasto, x: 20, y: 66, text: "--", text_font: f_b26, styles: st_txt }
+              - label: { x: 20, y: 108, width: 260, text: "Comando e stato arriveranno dal modulo Webasto dedicato.", text_font: f_s15, styles: st_mut, long_mode: WRAP }
+              - obj: { x: 20, y: 222, width: 80, height: 56, radius: 16, styles: [st_tile, st_dim], clickable: false, widgets: [label: { align: CENTER, text: "30'", text_font: f_b20 }] }
+              - obj: { x: 110, y: 222, width: 80, height: 56, radius: 16, styles: [st_tile, st_dim], clickable: false, widgets: [label: { align: CENTER, text: "1 h", text_font: f_b20 }] }
+              - obj: { x: 200, y: 222, width: 80, height: 56, radius: 16, styles: [st_tile, st_dim], clickable: false, widgets: [label: { align: CENTER, text: "\U000F0425", text_font: i_s }] }
+
+        # ── Temperature degli ambienti ──
+        - obj:
+            x: 960
+            y: 412
+            width: 300
+            height: 372
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F0F55", text_font: i_s, text_color: 0xE8845C }
+              - label: { x: 52, y: 22, text: "AMBIENTI", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { x: 20, y: 76, text: "Dinette", styles: st_mut }
+              - label: { id: am_din, x: 140, y: 70, width: 140, text_align: RIGHT, text: "--", text_font: f_b26, styles: st_txt }
+              - obj: { x: 20, y: 114, width: 260, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 136, text: "Mansarda", styles: st_mut }
+              - label: { id: am_mans, x: 140, y: 130, width: 140, text_align: RIGHT, text: "--", text_font: f_b26, styles: st_txt }
+              - obj: { x: 20, y: 174, width: 260, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 196, text: "Letto", styles: st_mut }
+              - label: { id: am_letto, x: 140, y: 190, width: 140, text_align: RIGHT, text: "--", text_font: f_b26, styles: st_txt }
+              - obj: { x: 20, y: 234, width: 260, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 256, text: "Nel frigo", styles: st_mut }
+              - label: { id: am_frigo, x: 140, y: 250, width: 140, text_align: RIGHT, text: "--", text_font: f_b26, styles: st_txt }
+              - obj: { x: 20, y: 294, width: 260, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 316, text: "Esterna", styles: st_mut }
+              - label: { id: am_ext, x: 140, y: 310, width: 140, text_align: RIGHT, text: "--", text_font: f_b26, styles: st_txt }
+
+    # ═══════════════ VEICOLO (secondario: il focus veicolo e' della Atoto) ═══════════════
+    - id: page_veicolo
+      styles: st_page
+      widgets:
+        - obj:
+            x: 124
+            y: 96
+            width: 340
+            height: 476
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F07FB", text_font: i_s, text_color: 0xE8845C }
+              - label: { x: 52, y: 22, text: "VEICOLO", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { id: vs_ico, x: 20, y: 62, text: "\U000F0A47", text_font: i_l, styles: st_dim }
+              - label: { id: vs_state, x: 78, y: 64, text: "--", text_font: f_b26, styles: st_txt }
+              - label: { id: vs_sub, x: 78, y: 98, width: 250, text: "", text_font: f_s15, styles: st_mut }
+              - label: { x: 20, y: 152, text: "Gasolio", text_font: f_s15, styles: st_mut }
+              - label: { id: vs_fuel, x: 20, y: 172, text: "--", text_font: f_b36, styles: st_txt }
+              - label: { id: vs_fuel_km, x: 150, y: 184, width: 170, text_align: RIGHT, text: "", text_font: f_b20, styles: st_txt }
+              - bar: { id: vs_fuel_bar, x: 20, y: 224, width: 300, height: 10, value: 0, styles: st_track, radius: 5, indicator: { bg_color: 0xF0A500, radius: 5 } }
+              - label: { x: 20, y: 262, text: "Olio motore", styles: st_mut }
+              - label: { id: vs_oil, x: 170, y: 261, width: 150, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 298, width: 300, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 316, text: "Liquido", styles: st_mut }
+              - label: { id: vs_cool, x: 170, y: 315, width: 150, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 352, width: 300, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 370, text: "Batteria motore", styles: st_mut }
+              - label: { id: vs_v1, x: 170, y: 369, width: 150, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 406, width: 300, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 424, text: "Km totali", styles: st_mut }
+              - label: { id: vs_km, x: 170, y: 423, width: 150, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+
+        # ── Gomme (muso a destra: lato sinistro in alto) ──
+        - obj:
+            x: 480
+            y: 96
+            width: 440
+            height: 476
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { id: ty_head_i, x: 20, y: 18, text: "\U000F0C4D", text_font: i_s, text_color: 0x8A909A }
+              - label: { x: 52, y: 22, text: "GOMME", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { id: ty_head, x: 220, y: 20, width: 200, text_align: RIGHT, text: "--", styles: st_mut }
+              - image: { x: 55, y: 176, src: img_roof }
+              - label: { id: ty_ps, x: 20, y: 72, text: "--", text_font: f_b26, text_color: 0x8A909A }
+              - label: { id: ty_ps_t, x: 20, y: 106, text: "", text_font: f_s15, styles: st_mut }
+              - label: { id: ty_as, x: 240, y: 72, width: 180, text_align: RIGHT, text: "--", text_font: f_b26, text_color: 0x8A909A }
+              - label: { id: ty_as_t, x: 240, y: 106, width: 180, text_align: RIGHT, text: "", text_font: f_s15, styles: st_mut }
+              - label: { id: ty_pd, x: 20, y: 348, text: "--", text_font: f_b26, text_color: 0x8A909A }
+              - label: { id: ty_pd_t, x: 20, y: 382, text: "", text_font: f_s15, styles: st_mut }
+              - label: { id: ty_ad, x: 240, y: 348, width: 180, text_align: RIGHT, text: "--", text_font: f_b26, text_color: 0x8A909A }
+              - label: { id: ty_ad_t, x: 240, y: 382, width: 180, text_align: RIGHT, text: "", text_font: f_s15, styles: st_mut }
+              - label: { x: 20, y: 440, width: 400, text_align: CENTER, text: "muso a destra · soglie della vista Gomme", text_font: f_s14, styles: st_dim }
+
+        # ── Livella ──
+        - obj:
+            x: 936
+            y: 96
+            width: 324
+            height: 476
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F14F1", text_font: i_s, text_color: 0xE8845C }
+              - label: { x: 52, y: 22, text: "LIVELLA", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - obj:
+                  x: 42
+                  y: 76
+                  width: 240
+                  height: 240
+                  radius: 120
+                  styles: st_tile
+                  scrollable: false
+                  clickable: false
+                  widgets:
+                    - obj: { x: 40, y: 40, width: 160, height: 160, radius: 80, styles: st_ring, clickable: false }
+                    - obj: { x: 80, y: 80, width: 80, height: 80, radius: 40, styles: st_ring, clickable: false }
+                    - obj: { x: 0, y: 119, width: 240, height: 2, styles: st_sep, clickable: false }
+                    - obj: { x: 119, y: 0, width: 2, height: 240, styles: st_sep, clickable: false }
+                    - obj: { id: lv_dot, x: 98, y: 98, width: 44, height: 44, radius: 22, bg_color: 0x8A909A, bg_opa: 90%, border_width: 0, clickable: false }
+              - label: { id: lv_state, x: 20, y: 340, width: 284, text_align: CENTER, text: "--", text_font: f_b20, styles: st_txt }
+              - label: { id: lv_xy, x: 20, y: 372, width: 284, text_align: CENTER, text: "", text_font: f_s15, styles: st_mut }
+              - label: { x: 20, y: 420, width: 284, text_align: CENTER, text: "bolla al centro = in piano", text_font: f_s14, styles: st_dim }
+
+        # ── Ultimo viaggio (TRIP del cruscotto via CAN) ──
+        - obj:
+            x: 124
+            y: 588
+            width: 540
+            height: 196
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F08F0", text_font: i_s, text_color: 0xE8845C }
+              - label: { x: 52, y: 22, text: "ULTIMO VIAGGIO", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - obj: { <<: &trip { y: 96, width: 117, height: 80, styles: st_tile, scrollable: false, clickable: false }, x: 20, widgets: [label: { x: 14, y: 12, text: "Distanza", text_font: f_s15, styles: st_mut }, label: { id: tr_dist, x: 14, y: 40, text: "--", text_font: f_b20 }] }
+              - obj: { <<: *trip, x: 149, widgets: [label: { x: 14, y: 12, text: "Durata", text_font: f_s15, styles: st_mut }, label: { id: tr_dur, x: 14, y: 40, text: "--", text_font: f_b20 }] }
+              - obj: { <<: *trip, x: 278, widgets: [label: { x: 14, y: 12, text: "Media", text_font: f_s15, styles: st_mut }, label: { id: tr_avg, x: 14, y: 40, text: "--", text_font: f_b20 }] }
+              - obj: { <<: *trip, x: 407, widgets: [label: { x: 14, y: 12, text: "L/100 km", text_font: f_s15, styles: st_mut }, label: { id: tr_cons, x: 14, y: 40, text: "--", text_font: f_b20 }] }
+
+        # ── Spie ──
+        - obj:
+            x: 680
+            y: 588
+            width: 580
+            height: 196
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F11BE", text_font: i_s, text_color: 0x34C759 }
+              - label: { x: 52, y: 22, text: "SPIE", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - obj: { <<: &spy { width: 172, height: 56, styles: st_tile, scrollable: false, clickable: false }, x: 20, y: 64, widgets: [label: { id: sp_freno_i, x: 12, y: 16, text: "\U000F0D5F", text_font: i_s, text_color: 0x8A909A }, label: { id: sp_freno, x: 44, y: 18, text: "Freno a mano", text_font: f_s15, styles: st_mut }] }
+              - obj: { <<: *spy, x: 204, y: 64, widgets: [label: { id: sp_porte_i, x: 12, y: 16, text: "\U000F0B6B", text_font: i_s, text_color: 0x8A909A }, label: { id: sp_porte, x: 44, y: 18, text: "Porte cabina", text_font: f_s15, styles: st_mut }] }
+              - obj: { <<: *spy, x: 388, y: 64, widgets: [label: { id: sp_luci_i, x: 12, y: 16, text: "\U000F0C4A", text_font: i_s, text_color: 0x8A909A }, label: { id: sp_luci, x: 44, y: 18, text: "Luci", text_font: f_s15, styles: st_mut }] }
+              - obj: { <<: *spy, x: 20, y: 128, widgets: [label: { id: sp_olio_i, x: 12, y: 16, text: "\U000F03C7", text_font: i_s, text_color: 0x8A909A }, label: { id: sp_olio, x: 44, y: 18, text: "Olio", text_font: f_s15, styles: st_mut }] }
+              - obj: { <<: *spy, x: 204, y: 128, widgets: [label: { id: sp_batt_i, x: 12, y: 16, text: "\U000F010C", text_font: i_s, text_color: 0x8A909A }, label: { id: sp_batt, x: 44, y: 18, text: "Batteria", text_font: f_s15, styles: st_mut }] }
+              - obj: { <<: *spy, x: 388, y: 128, widgets: [label: { id: sp_liq_i, x: 12, y: 16, text: "\U000F1A80", text_font: i_s, text_color: 0x8A909A }, label: { id: sp_liq, x: 44, y: 18, text: "Liquido", text_font: f_s15, styles: st_mut }] }
+
+    # ═══════════════ MEDIA ═══════════════
+    - id: page_media
+      styles: st_page
+      widgets:
+        - obj:
+            x: 124
+            y: 96
+            width: 1136
+            height: 688
+            styles: st_card
+            scrollable: false
+            widgets:
+              - obj:
+                  x: 60
+                  y: 144
+                  width: 400
+                  height: 400
+                  radius: 32
+                  styles: st_tile
+                  clip_corner: true
+                  clickable: false
+                  scrollable: false
+                  widgets:
+                    - label: { align: CENTER, text: "\U000F075A", text_font: i_xl, text_color: 0xE8845C }
+                    - image: { id: md_cover, align: CENTER, src: img_roof, hidden: true }
+              - label: { id: md_state, x: 520, y: 170, text: "HomePod Dinette", text_font: f_s15, styles: st_mut }
+              - label: { id: md_title, x: 520, y: 200, width: 580, height: 48, text: "--", text_font: f_b36, styles: st_txt, long_mode: DOT }
+              - label: { id: md_artist, x: 520, y: 254, width: 580, height: 30, text: "", text_font: f_b20, styles: st_mut, long_mode: DOT }
+              - button:
+                  x: 520
+                  y: 340
+                  width: 96
+                  height: 96
+                  radius: 48
+                  styles: st_tile
+                  widgets: [label: { align: CENTER, text: "\U000F04AE", text_font: i_m }]
+                  on_click: { homeassistant.service: { service: media_player.media_previous_track, data: { entity_id: media_player.homepod_mini } } }
+              - button:
+                  x: 640
+                  y: 328
+                  width: 120
+                  height: 120
+                  radius: 60
+                  styles: [st_tile, st_modeon]
+                  widgets: [label: { id: md_play_ico, align: CENTER, text: "\U000F040A", text_font: i_l }]
+                  on_click: { homeassistant.service: { service: media_player.media_play_pause, data: { entity_id: media_player.homepod_mini } } }
+              - button:
+                  x: 784
+                  y: 340
+                  width: 96
+                  height: 96
+                  radius: 48
+                  styles: st_tile
+                  widgets: [label: { align: CENTER, text: "\U000F04AD", text_font: i_m }]
+                  on_click: { homeassistant.service: { service: media_player.media_next_track, data: { entity_id: media_player.homepod_mini } } }
+              - button:
+                  x: 520
+                  y: 480
+                  width: 170
+                  height: 64
+                  styles: st_tile
+                  widgets:
+                    - label: { align: CENTER, x: -36, text: "\U000F075E", text_font: i_m }
+                    - label: { align: CENTER, x: 20, text: "Vol -", text_font: f_b20 }
+                  on_click: { homeassistant.service: { service: media_player.volume_down, data: { entity_id: media_player.homepod_mini } } }
+              - button:
+                  x: 710
+                  y: 480
+                  width: 170
+                  height: 64
+                  styles: st_tile
+                  widgets:
+                    - label: { align: CENTER, x: -36, text: "\U000F075D", text_font: i_m }
+                    - label: { align: CENTER, x: 20, text: "Vol +", text_font: f_b20 }
+                  on_click: { homeassistant.service: { service: media_player.volume_up, data: { entity_id: media_player.homepod_mini } } }
+
+    # ═══════════════ SISTEMA ═══════════════
+    - id: page_sistema
+      styles: st_page
+      widgets:
+        - obj:
+            x: 124
+            y: 96
+            width: 560
+            height: 336
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F00DF", text_font: i_s, text_color: 0xE8845C }
+              - label: { x: 52, y: 22, text: "DISPLAY", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { x: 20, y: 72, text: "Luminosità", styles: st_txt }
+              - slider:
+                  id: sys_bright
+                  x: 20
+                  y: 112
+                  width: 430
+                  height: 18
+                  min_value: 30
+                  max_value: 100
+                  value: 100
+                  styles: st_track
+                  radius: 9
+                  indicator: { bg_color: 0xE8845C, radius: 9 }
+                  knob: { bg_color: 0xE8845C, radius: 14, pad_all: 6 }
+                  on_change:
+                    - globals.set: { id: display_brightness, value: !lambda 'return (int)x;' }
+                    - script.execute: update_brightness
+              - label: { id: sys_bright_v, x: 470, y: 108, width: 70, text_align: RIGHT, text: "100%", text_font: f_b20, styles: st_txt }
+              - label: { x: 20, y: 184, text: "Tema scuro", styles: st_txt }
+              - switch:
+                  id: sw_dark
+                  x: 450
+                  y: 174
+                  width: 90
+                  height: 44
+                  styles: st_track
+                  indicator: { checked: { bg_color: 0xE8845C } }
+                  knob: { bg_color: 0xFFFFFF }
+                  on_change:
+                    - if:
+                        condition:
+                          lambda: 'return x;'
+                        then:
+                          - switch.turn_on: sw_dark_mode
+                        else:
+                          - switch.turn_off: sw_dark_mode
+              - label: { x: 20, y: 236, width: 520, text: "Il tema cambia da solo con la luce della dinette (automazione in HA). Qui lo forzi fino al prossimo cambio di luce.", text_font: f_s14, styles: st_mut, long_mode: WRAP }
+
+        - obj:
+            x: 700
+            y: 96
+            width: 560
+            height: 336
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F0425", text_font: i_s, text_color: 0xE8845C }
+              - label: { x: 52, y: 22, text: "UTENZE 12V", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { id: sys_ut_v, x: 20, y: 66, text: "--", text_font: f_b36, text_color: 0x8A909A }
+              - label: { x: 20, y: 124, width: 520, text: "Interruttore generale della DS-300 (conn 17, pin C.GEN). Spegnendo, prima si spengono router e Home Assistant, dopo 90 s si stacca il generale. Serve il PIN in entrambi i versi.", text_font: f_s15, styles: st_mut, long_mode: WRAP }
+              - button:
+                  x: 20
+                  y: 252
+                  width: 520
+                  height: 64
+                  styles: [st_tile, st_modeon]
+                  widgets: [label: { id: sys_ut_btn_l, align: CENTER, text: "--", text_font: f_b20 }]
+                  on_click: { script.execute: pin_open }
+
+        - obj:
+            x: 124
+            y: 448
+            width: 560
+            height: 336
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F0469", text_font: i_s, text_color: 0x5AA9E6 }
+              - label: { x: 52, y: 22, text: "ROUTER GL.INET", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { x: 20, y: 78, text: "Memoria", styles: st_mut }
+              - label: { id: rtr_mem, x: 340, y: 76, width: 200, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 118, width: 520, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 140, text: "Carico (1 min)", styles: st_mut }
+              - label: { id: rtr_load, x: 340, y: 138, width: 200, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 180, width: 520, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 202, text: "Client connessi", styles: st_mut }
+              - label: { id: rtr_clients, x: 340, y: 200, width: 200, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 242, width: 520, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 264, text: "Segnale WiFi", styles: st_mut }
+              - label: { id: rtr_signal, x: 340, y: 262, width: 200, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+
+        - obj:
+            x: 700
+            y: 448
+            width: 560
+            height: 336
+            styles: st_card
+            scrollable: false
+            widgets:
+              - label: { x: 20, y: 18, text: "\U000F048B", text_font: i_s, text_color: 0xE8845C }
+              - label: { x: 52, y: 22, text: "HOST HAOS E PANNELLO", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
+              - label: { x: 20, y: 78, text: "CPU", styles: st_mut }
+              - label: { id: host_cpu, x: 340, y: 76, width: 200, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 118, width: 520, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 140, text: "Memoria", styles: st_mut }
+              - label: { id: host_mem, x: 340, y: 138, width: 200, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 180, width: 520, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 202, text: "Disco", styles: st_mut }
+              - label: { id: host_disk, x: 340, y: 200, width: 200, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+              - obj: { x: 20, y: 242, width: 520, height: 1, styles: st_sep, clickable: false }
+              - label: { x: 20, y: 264, text: "IP pannello", styles: st_mut }
+              - label: { id: sys_ip, x: 300, y: 262, width: 240, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
+
+    # ═══════════════ RIPOSO / NOTTE: ora e stato su nero (colori da night_enter) ═══════════════
+    - id: page_notte
+      skip: true
+      bg_color: 0x000000
+      widgets:
+        - obj:
+            x: 0
+            y: 0
+            width: 1280
+            height: 800
+            bg_color: 0x000000
+            bg_opa: COVER
+            border_width: 0
+            radius: 0
+            pad_all: 0
+            scrollable: false
+            on_click: { script.execute: night_exit }
+            widgets:
+              - label: { id: nt_clock, align: CENTER, y: -170, text: "--:--", text_font: f_b200, styles: st_saver }
+              - label: { id: nt_date, align: CENTER, y: -20, text: "", text_font: f_b36, styles: st_saver2 }
+              # traccia in riproduzione (solo mentre suona)
+              - obj:
+                  id: nt_music
+                  align: CENTER
+                  y: 90
+                  hidden: true
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  width: SIZE_CONTENT
+                  height: SIZE_CONTENT
+                  clickable: false
+                  scrollable: false
+                  layout: { type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 14 }
+                  widgets:
+                    - label: { text: "\U000F075A", text_font: i_m, styles: st_saver2 }
+                    - label: { id: nt_track, text: "", text_font: f_b36, styles: st_saver2, width: SIZE_CONTENT, max_width: 1050 }
+              # temperature, batteria, stato
+              - obj:
+                  align: CENTER
+                  y: 230
+                  bg_opa: TRANSP
+                  border_width: 0
+                  pad_all: 0
+                  width: SIZE_CONTENT
+                  height: SIZE_CONTENT
+                  clickable: false
+                  scrollable: false
+                  layout: { type: flex, flex_flow: ROW, flex_align_main: CENTER, flex_align_cross: CENTER, pad_column: 14 }
+                  widgets:
+                    - label: { text: "\U000F0F55", text_font: i_m, styles: st_saver2 }
+                    - label: { id: nt_tin, text: "--", text_font: f_b36, styles: st_saver2, pad_right: 40 }
+                    - label: { text: "\U000F0594", text_font: i_m, styles: st_saver2 }
+                    - label: { id: nt_text, text: "--", text_font: f_b36, styles: st_saver2, pad_right: 40 }
+                    - label: { text: "\U000F0080", text_font: i_m, styles: st_saver2 }
+                    - label: { id: nt_batt, text: "--", text_font: f_b36, styles: st_saver2, pad_right: 40 }
+                    - label: { id: nt_state_i, text: "\U000F0CC8", text_font: i_m, styles: st_saver2 }
+                    - label: { id: nt_state, text: "tutto ok", text_font: f_b36, styles: st_saver2, max_width: 560 }
+              - label: { align: BOTTOM_MID, y: -30, text: "tocca per tornare alla casa", text_font: f_b20, styles: st_saver2 }
+
+
+# ────────────────────────────────────────────────────────────
+# Script
+# ────────────────────────────────────────────────────────────
+script:
+  - id: update_grey
+    then:
+      - lambda: |-
+          int pct = (int) lroundf(id(grey_est_l) * 100.0f / ${grey_l});
+          bool full = id(grey_full).state;
+          uint32_t c = full ? ui::RED : (pct >= 75 ? ui::AMBER : 0xA08868);
+          std::string v = std::to_string(pct) + "%";
+          ui::text(id(hm_gri_v), v.c_str());
+          ui::text(id(rs_gri_v), v.c_str());
+          lv_bar_set_value(id(hm_gri_bar), pct, LV_ANIM_OFF);
+          lv_bar_set_value(id(rs_gri_bar), pct, LV_ANIM_OFF);
+          lv_obj_set_style_bg_color(id(hm_gri_bar), lv_color_hex(c), LV_PART_INDICATOR);
+          lv_obj_set_style_bg_color(id(rs_gri_bar), lv_color_hex(c), LV_PART_INDICATOR);
+          ui::text(id(hm_gri_d), full ? "piene" : "stima");
+          ui::text(id(rs_gri_k1), full ? "Piene" : "Non piene");
+          ui::text(id(rs_gri_u), (std::to_string((int) id(grey_est_l)) + " L").c_str());
+  # Tema: riscrive gli stili condivisi e fa ridisegnare tutto.
+  - id: apply_theme
+    then:
+      - lambda: |-
+          bool d = id(dark_mode);
+          auto C = [d](uint32_t dk, uint32_t lt) { return lv_color_hex(d ? dk : lt); };
+          lv_style_set_bg_color(id(st_page), C(0x0E1116, 0xE6E8EC));
+          lv_style_set_text_color(id(st_page), C(0xF2F2F4, 0x1C1C1E));
+          lv_style_set_bg_color(id(st_card), C(0x171B22, 0xFFFFFF));
+          lv_style_set_bg_color(id(st_tile), C(0x20252E, 0xF0F2F5));
+          lv_style_set_text_color(id(st_tile), C(0xF2F2F4, 0x1C1C1E));
+          lv_style_set_bg_color(id(st_light), C(0x20252E, 0xFFFFFF));
+          lv_style_set_border_color(id(st_light), C(0x262C36, 0xDADDE3));
+          lv_style_set_text_color(id(st_light), C(0x8A909A, 0x636366));
+          lv_style_set_bg_color(id(st_on), C(0x3A2A1E, 0xFFE9D2));
+          lv_style_set_text_color(id(st_on), C(0xFFD9B0, 0x8A4A12));
+          lv_style_set_bg_color(id(st_cold), C(0x16283A, 0xDCEBF8));
+          lv_style_set_text_color(id(st_cold), C(0x9FD0F5, 0x1F5F94));
+          lv_style_set_text_color(id(st_txt), C(0xF2F2F4, 0x1C1C1E));
+          lv_style_set_text_color(id(st_mut), C(0x8A909A, 0x636366));
+          lv_style_set_text_color(id(st_dim), C(0x5A606A, 0xA0A4AB));
+          lv_style_set_bg_color(id(st_sep), C(0x262C36, 0xDADDE3));
+          lv_style_set_bg_color(id(st_track), C(0x20252E, 0xE4E7EC));
+          lv_style_set_arc_color(id(st_arctrack), C(0x20252E, 0xE4E7EC));
+          lv_style_set_border_color(id(st_ring), C(0x262C36, 0xD0D4DA));
+          lv_style_set_text_color(id(st_rail), C(0x8A909A, 0x636366));
+          lv_style_set_bg_color(id(st_railon), C(0x20252E, 0xFFFFFF));
+          lv_style_set_border_color(id(st_railbox), C(0x262C36, 0xDADDE3));
+          lv_style_set_bg_color(id(st_banner), C(0x5A1612, 0xFFE1DD));
+          lv_style_set_text_color(id(st_banner), C(0xFFD4CF, 0x8A1C12));
+          lv_style_set_bg_color(id(st_bannerbtn), C(0x7A231D, 0xFFC9C2));
+          lv_style_set_text_color(id(st_bannerbtn), C(0xFFD4CF, 0x8A1C12));
+          lv_style_set_bg_color(id(st_overlay), C(0x171B22, 0xFFFFFF));
+          lv_obj_report_style_change(nullptr);
+          ui::checked(id(sw_dark), d);
+      - if:
+          condition:
+            lambda: 'return id(dark_mode);'
+          then:
+            - lvgl.image.update: { id: plan_img, src: img_plan_dark }
+          else:
+            - lvgl.image.update: { id: plan_img, src: img_plan_light }
+
+  # Navigazione: pagina idx (0 Casa ... 5 Sistema) + stato della barra laterale
+  - id: nav
+    parameters:
+      idx: int
+    then:
+      - lambda: |-
+          esphome::lvgl::LvPageType *pg[] = {id(page_home), id(page_risorse), id(page_clima),
+                                             id(page_veicolo), id(page_media), id(page_sistema)};
+          if (idx < 0 || idx > 5) idx = 0;
+          id(cur_page) = idx;
+          id(lvgl_comp)->show_page(pg[idx]->index, LV_SCREEN_LOAD_ANIM_NONE, 0);
+          lv_obj_t *rb[] = {id(rb_0), id(rb_1), id(rb_2), id(rb_3), id(rb_4), id(rb_5)};
+          for (int i = 0; i < 6; i++) ui::checked(rb[i], i == idx);
+          ui::hidden(id(rail), false);
+          ui::hidden(id(topbar), false);
+      - script.execute: load_cover
+
+  # Copertina: la scarica solo con la pagina Media aperta. Decodificare il JPEG
+  # (anche 400 KB, a piena risoluzione) blocca il loop per qualche secondo:
+  # meglio che succeda mentre si guarda il player, non sulle altre pagine.
+  - id: load_cover
+    then:
+      - if:
+          condition:
+            lambda: 'return id(cover_url).empty();'
+          then:
+            - lambda: 'id(cover_loaded) = "";'
+            - lvgl.widget.hide: md_cover
+          else:
+            - if:
+                condition:
+                  lambda: 'return id(cur_page) == 4 && id(cover_url) != id(cover_loaded);'
+                then:
+                  - lambda: 'id(cover_loaded) = id(cover_url);'
+                  - online_image.set_url:
+                      id: cover_img
+                      url: !lambda 'return std::string("${ha_url}") + id(cover_url);'
+
+  # ── Schermata Notte ──
+  - id: update_nt_track
+    then:
+      - lambda: |-
+          auto &t = id(ha_media_title).state, &a = id(ha_media_artist).state;
+          bool on = id(ha_media_state).state == "playing" && !t.empty();
+          ui::hidden(id(nt_music), !on);
+          if (on) ui::text(id(nt_track), a.empty() ? t : t + " · " + a);
+
+  # night = true: ambra scuro e luminosita' minima (scena Notte, luna, sera);
+  # false: testo chiaro alla luminosita' normale (riposo di giorno).
+  - id: night_enter
+    parameters:
+      night: bool
+    then:
+      - lambda: |-
+          id(night_on) = true;
+          id(night_t) = millis();
+          // di sera tutto ambra scuro; di giorno ora grigio chiaro, il resto piu' tenue
+          lv_style_set_text_color(id(st_saver), lv_color_hex(night ? 0x7A3A22 : 0xA8ADB4));
+          lv_style_set_text_color(id(st_saver2), lv_color_hex(night ? 0x7A3A22 : 0x7A8089));
+          lv_obj_report_style_change(nullptr);
+          ui::hidden(id(rail), true);
+          ui::hidden(id(topbar), true);
+          ui::hidden(id(brightness_panel), true);
+          ui::hidden(id(check_panel), true);
+          ui::hidden(id(alarm_panel), true);
+          ui::hidden(id(lim_panel), true);
+      - lvgl.page.show: page_notte
+      - script.execute: update_clock
+      - light.turn_on:
+          id: display_backlight
+          brightness: !lambda 'return night ? 0.07f : id(display_brightness) / 100.0f;'
+      - script.execute: saver_timeout
+
+  # Dopo 30 s di schermata con l'ora senza nessuno in dinette lo schermo si spegne (un tocco lo riaccende)
+  - id: saver_timeout
+    mode: restart
+    then:
+      - delay: 30s
+      - if:
+          condition:
+            # con qualcuno in dinette resta acceso; si riparte quando se ne va
+            lambda: 'return id(night_on) && !id(ha_presence).state;'
+          then:
+            - light.turn_off: { id: display_backlight, transition_length: 2s }
+            - delay: 2s
+            - lvgl.pause:
+
+  # Presenza in dinette (Aqara mmWave): schermo spento -> schermata con l'ora, in dissolvenza
+  - id: presence_wake
+    then:
+      - if:
+          condition:
+            lambda: 'return id(night_on) && !id(display_backlight).current_values.is_on();'
+          then:
+            - script.stop: saver_timeout
+            - lvgl.resume:
+            - lvgl.widget.redraw:
+            - script.execute: update_clock
+            - light.turn_on:
+                id: display_backlight
+                transition_length: 2s
+                brightness: !lambda 'return id(dark_mode) ? 0.07f : id(display_brightness) / 100.0f;'
+
+  - id: night_exit
+    then:
+      - script.stop: saver_timeout
+      - lambda: 'id(night_on) = false;'
+      - light.turn_on:
+          id: display_backlight
+          brightness: !lambda 'return id(display_brightness) / 100.0;'
+      # riposo breve (distrazione): si torna alla pagina di prima, altrimenti Casa
+      - script.execute:
+          id: nav
+          idx: !lambda 'return millis() - id(night_t) < 10000 ? id(cur_page) : 0;'
+
+  # ── Orologio (barra in alto e schermata Notte) ──
+  - id: update_clock
+    then:
+      - lambda: |-
+          auto now = id(ha_time).now();
+          if (!now.is_valid()) return;
+          static const char *giorni[] = {"Domenica", "Lunedì", "Martedì", "Mercoledì", "Giovedì", "Venerdì", "Sabato"};
+          static const char *mesi[] = {"gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio",
+                                       "agosto", "settembre", "ottobre", "novembre", "dicembre"};
+          char hm[8]; snprintf(hm, sizeof hm, "%02d:%02d", now.hour, now.minute);
+          std::string dm = std::to_string(now.day_of_month) + " " + mesi[now.month - 1];
+          ui::text(id(hdr_clock), hm);
+          ui::text(id(hdr_dow), giorni[now.day_of_week - 1]);
+          ui::text(id(hdr_date), dm);
+          if (id(night_on)) {
+            ui::text(id(nt_clock), hm);
+            ui::text(id(nt_date), std::string(giorni[now.day_of_week - 1]) + " " + dm);
+          }
+
+  # ── Luci: conteggio accese ──
+  - id: update_lights
+    then:
+      - lambda: |-
+          int n = 0;
+          for (auto *s : {id(ha_l_princ), id(ha_l_tavolo), id(ha_l_panca), id(ha_l_leddin), id(ha_l_corr),
+                          id(ha_l_cucina), id(ha_l_ledcuc), id(ha_l_bagno), id(ha_l_doccia), id(ha_l_gavone),
+                          id(ha_l_esterna), id(ha_l_mans1), id(ha_l_mans2), id(ha_l_letto1), id(ha_l_letto2)})
+            if (s->state == "on") n++;
+          ui::text(id(lights_count), n == 0 ? std::string("Luci tutte spente")
+                                     : (n == 1 ? std::string("1 luce accesa su 15")
+                                               : std::to_string(n) + " luci accese su 15"));
+          ui::color(id(lights_count), n ? ui::ACCENT : ui::GREY);
+      - script.execute: update_checklist
+
+  # ── Temperature e meteo ──
+  - id: update_temps
+    then:
+      - lambda: |-
+          bool ni = id(ntc_int_seen) && millis() - id(ntc_int_seen) < 120000;
+          bool ne = id(ntc_ext_seen) && millis() - id(ntc_ext_seen) < 120000;
+          float tin = ni ? id(temp_int_ntc).state : id(ha_t_din).state;
+          float tout = ne ? id(temp_ext_ntc).state : id(ha_temp_ext).state;
+          if (isnan(tout)) tout = id(ha_weather_temp).state;
+          const std::string &w = id(ha_weather_state).state;
+          const char *ico = "\U000F0595", *cond = "";
+          if (w == "sunny") { ico = "\U000F0599"; cond = "sereno"; }
+          else if (w == "clear-night") { ico = "\U000F0594"; cond = "sereno"; }
+          else if (w == "partlycloudy") { ico = "\U000F0595"; cond = "poco nuvoloso"; }
+          else if (w == "cloudy") { ico = "\U000F0590"; cond = "nuvoloso"; }
+          else if (w == "rainy") { ico = "\U000F0597"; cond = "pioggia"; }
+          else if (w == "pouring") { ico = "\U000F0596"; cond = "pioggia forte"; }
+          else if (w == "snowy" || w == "snowy-rainy") { ico = "\U000F0598"; cond = "neve"; }
+          else if (w == "fog") { ico = "\U000F0591"; cond = "nebbia"; }
+          else if (w == "windy" || w == "windy-variant") { ico = "\U000F059D"; cond = "vento"; }
+          else if (w == "lightning" || w == "lightning-rainy") { ico = "\U000F0593"; cond = "temporale"; }
+          ui::text(id(dentro_v), ui::fmt(tin, 1, "°"));
+          ui::text(id(meteo_ico), ico);
+          ui::text(id(fuori_v), ui::fmt(tout, 1, "° fuori") + (*cond ? std::string(" · ") + cond : std::string()));
+          ui::text(id(h_t_din), ui::fmt(id(ha_t_din).state, 1, "°"));
+          ui::text(id(h_t_mans), ui::fmt(id(ha_t_mans).state, 1, "°"));
+          ui::text(id(h_t_letto), ui::fmt(id(ha_t_letto).state, 1, "°"));
+          ui::text(id(am_din), ui::fmt(id(ha_t_din).state, 1, "°"));
+          ui::text(id(am_mans), ui::fmt(id(ha_t_mans).state, 1, "°"));
+          ui::text(id(am_letto), ui::fmt(id(ha_t_letto).state, 1, "°"));
+          ui::text(id(am_ext), ui::fmt(tout, 1, "°"));
+          ui::text(id(nt_tin), ui::fmt(tin, 1, "°"));
+          ui::text(id(nt_text), ui::fmt(tout, 1, "°"));
+
+  # ── Risorse: valori, stime di autonomia, frase in cima ──
+  - id: update_resources
+    then:
+      - lambda: |-
+          const int H = id(hist_head);
+          float soc = id(ha_batt_soc).state, wat = id(ha_water).state, gas = id(ha_gas_percent).state;
+          float cur = id(ha_current).state, kg = id(ha_gas_kg).state;
+          bool charging = !isnan(cur) && cur > 0.3f;
+          float rb = ui::rate_per_hour(id(hist_batt), H, soc);
+          float rw = ui::rate_per_hour(id(hist_water), H, wat);
+          float rg = ui::rate_per_hour(id(hist_gas), H, gas);
+          float hb = charging ? NAN : ui::hours_left(id(hist_batt), H, soc, ${batt_floor});
+          float hw = ui::hours_left(id(hist_water), H, wat, 0);
+          float hg = ui::hours_left(id(hist_gas), H, gas, 0);
+          auto bar = [](lv_obj_t *b, float v) { lv_bar_set_value(b, isnan(v) ? 0 : (int) lroundf(v), LV_ANIM_OFF); };
+          std::string sb = charging ? std::string("in carica") : ui::short_left(hb);
+          // Casa
+          ui::text(id(hm_batt_v), ui::fmt(soc, 0, "%")); bar(id(hm_batt_bar), soc); ui::text(id(hm_batt_d), sb);
+          ui::text(id(hm_acq_v), ui::fmt(wat, 0, "%"));  bar(id(hm_acq_bar), wat);  ui::text(id(hm_acq_d), ui::short_left(hw));
+          ui::text(id(hm_gas_v), ui::fmt(gas, 0, "%"));  bar(id(hm_gas_bar), gas);  ui::text(id(hm_gas_d), ui::short_left(hg));
+          // Risorse
+          ui::text(id(rs_batt_v), ui::fmt(soc, 0, "%")); bar(id(rs_batt_bar), soc);
+          ui::text(id(rs_batt_k1), sb);
+          ui::text(id(rs_batt_k2), ui::fmt(cur, 1, " A"));
+          ui::color(id(rs_batt_k2), isnan(cur) ? ui::GREY : (cur >= 0 ? ui::GREEN : ui::AMBER));
+          ui::text(id(rs_batt_k3), isnan(rb) ? std::string("--") : ui::fmt(rb > 0 ? -rb * 24 * ${batt_ah} / 100.0f : 0.0f, 0, " Ah"));
+          ui::text(id(rs_acq_v), ui::fmt(wat, 0, "%")); bar(id(rs_acq_bar), wat);
+          ui::text(id(rs_acq_u), ui::fmt(wat * ${water_l} / 100.0f, 0, " L"));
+          ui::text(id(rs_acq_k1), ui::short_left(hw));
+          ui::text(id(rs_acq_k3), isnan(rw) ? std::string("--") : ui::fmt(rw > 0 ? -rw * 24 * ${water_l} / 100.0f : 0.0f, 0, " L"));
+          ui::text(id(rs_gas_v), ui::fmt(gas, 0, "%")); bar(id(rs_gas_bar), gas);
+          ui::text(id(rs_gas_k1), ui::short_left(hg));
+          float kg_pct = (!isnan(kg) && gas > 1) ? kg / gas : NAN;
+          ui::text(id(rs_gas_k3), (isnan(rg) || isnan(kg_pct)) ? std::string("--") : ui::fmt(rg > 0 ? -rg * 24 * kg_pct : 0.0f, 1, " kg"));
+          ui::text(id(nt_batt), ui::fmt(soc, 0, "%"));
+          // Frase: la risorsa che finisce prima (stime arrotondate apposta)
+          struct R { float h; const char *n; } r[] = {{hb, "la batteria"}, {hw, "l'acqua"}, {hg, "il gas"}};
+          std::sort(std::begin(r), std::end(r), [](const R &a, const R &b) {
+            if (isnan(a.h)) return false;
+            if (isnan(b.h)) return true;
+            return a.h < b.h;
+          });
+          std::string head, para, home;
+          if (isnan(r[0].h)) {
+            head = "stima non disponibile";
+            para = "Servono almeno 6 ore di dati dall'accensione del pannello o dall'ultimo rifornimento.";
+            home = "stima in arrivo";
+          } else if (std::isinf(r[0].h)) {
+            head = ui::long_left(r[0].h);
+            para = "Nessun consumo rilevante nelle ultime ore.";
+            home = "> 7 giorni";
+          } else {
+            head = ui::long_left(r[0].h);
+            para = std::string("Finisce prima ") + r[0].n + ".";
+            if (!isnan(r[1].h) && !std::isinf(r[1].h))
+              para += std::string(" Poi ") + r[1].n + " (" + ui::short_left(r[1].h) + ").";
+            home = ui::short_left(r[0].h) + " · finisce prima " + r[0].n;
+          }
+          if (charging) para += " La batteria ora è in carica.";
+          ui::text(id(rs_head), head);
+          ui::text(id(rs_para), para);
+          ui::text(id(hm_head), home);
+      - script.execute: update_alarms
+
+  # Campione orario dello storico (chiamato ogni minuto, scrive una volta l'ora)
+  - id: history_tick
+    then:
+      - lambda: |-
+          auto now = id(ha_time).now();
+          if (!now.is_valid()) return;
+          uint32_t hr = now.timestamp / 3600;
+          float soc = id(ha_batt_soc).state, wat = id(ha_water).state, gas = id(ha_gas_percent).state;
+          int H = id(hist_head);
+          if (id(hist_hour) == 0) {
+            id(hist_batt).fill(ui::NODATA); id(hist_water).fill(ui::NODATA); id(hist_gas).fill(ui::NODATA);
+            H = 0;
+          } else {
+            if (hr <= id(hist_hour)) return;
+            // ore senza campione (pannello spento): buchi nello storico
+            for (uint32_t k = 1; k < hr - id(hist_hour) && k < (uint32_t) ui::HN; k++) {
+              ui::push(id(hist_batt), H, NAN); ui::push(id(hist_water), H, NAN); ui::push(id(hist_gas), H, NAN);
+              H = (H + 1) % ui::HN;
+            }
+          }
+          ui::push(id(hist_batt), H, soc); ui::push(id(hist_water), H, wat); ui::push(id(hist_gas), H, gas);
+          id(hist_head) = (H + 1) % ui::HN;
+          id(hist_hour) = hr;
+      - script.execute: update_chart
+      - script.execute: update_resources
+
+  # Grafico 3 giorni: 72 campioni, il piu' recente a destra
+  - id: update_chart
+    then:
+      - lambda: |-
+          const int H = id(hist_head);
+          auto build = [H](const ui::Hist &h, esphome::lvgl::LvLineType *line) {
+            int n = 0;
+            for (int i = 0; i < ui::HN; i++) if (ui::at(h, H, i) != ui::NODATA) n++;
+            esphome::FixedVector<lv_point_precise_t> pts;
+            if (n < 2) {
+              pts.init(2);
+              pts.push_back({0, 159});
+              pts.push_back({1, 159});
+            } else {
+              pts.init(n);
+              for (int i = ui::HN - 1; i >= 0; i--) {
+                uint8_t v = ui::at(h, H, i);
+                if (v == ui::NODATA) continue;
+                lv_point_precise_t p;
+                p.x = (ui::HN - 1 - i) * 699 / (ui::HN - 1);
+                p.y = 159 - v * 158 / 100;
+                pts.push_back(p);
+              }
+            }
+            line->set_points(std::move(pts));
+          };
+          build(id(hist_batt), id(ch_batt));
+          build(id(hist_water), id(ch_acq));
+          build(id(hist_gas), id(ch_gas));
+
+  # ── Frigo e condizionatore ──
+  - id: update_clima
+    then:
+      - lambda: |-
+          const std::string &fs = id(ha_frigo_state).state;
+          bool fknown = !fs.empty() && fs != "unavailable" && fs != "unknown";
+          bool fon = fknown && fs != "off";
+          float ft = id(ha_frigo_target).state, fn = id(ha_frigo_temp).state;
+          const std::string &pr = id(ha_frigo_preset).state;
+          ui::text(id(fr_state), !fknown ? std::string("non raggiungibile") : (fon ? std::string("acceso") : std::string("spento")));
+          ui::color(id(fr_state), fon ? ui::GREEN : ui::GREY);
+          ui::text(id(fr_set), ui::fmt(ft, 0, "°"));
+          if (!isnan(ft)) lv_arc_set_value(id(fr_arc), (int) lroundf(ft));
+          ui::text(id(fr_now), "ora " + ui::fmt(fn, 1, "°"));
+          ui::checked(id(fr_eco), pr == "eco");
+          ui::checked(id(fr_boost), pr == "boost");
+          ui::text(id(fr_onoff_l), fon ? "Spegni" : "Accendi");
+          ui::checked(id(fr_vevor), fon);
+          ui::text(id(st_frigo_v), !fknown ? std::string("--") : (!fon ? std::string("spento")
+                    : ui::fmt(fn, 1, "°") + (pr == "eco" ? " eco" : (pr == "boost" ? " boost" : ""))));
+
+          const std::string &cs = id(ha_clima_state).state;
+          bool cool = cs == "cool";
+          bool man = !cool && id(ha_clima_sw).state == "on";
+          bool avail = id(ha_clima_ok).state == "on";
+          float ct = id(ha_clima_target).state, cn = id(ha_clima_now).state;
+          ui::text(id(ac_avail), avail ? "230V ok" : "230V assente");
+          ui::color(id(ac_avail), avail ? ui::GREEN : ui::GREY);
+          ui::text(id(ac_mode_l), cool ? "Raffresca a" : (man ? "Manuale · termostato a" : "Spento · impostato"));
+          ui::text(id(ac_set), ui::fmt(ct, 0, "°"));
+          if (!isnan(ct)) lv_arc_set_value(id(ac_arc), (int) lroundf(ct));
+          lv_obj_set_style_arc_color(id(ac_arc), lv_color_hex(cool || man ? ui::ACCENT : 0x5A606A), LV_PART_INDICATOR);
+          ui::text(id(ac_now), "ora " + ui::fmt(cn, 1, "°"));
+          ui::checked(id(ac_cool), cool);
+          ui::checked(id(ac_man), man);
+          ui::checked(id(ac_off), !cool && !man);
+          ui::text(id(st_clima_v), !avail ? std::string("serve 230V") : (cool ? "raffresca " + ui::fmt(ct, 0, "°") : (man ? std::string("manuale") : std::string("spento"))));
+          ui::color(id(st_clima_i), cool || man ? ui::ACCENT : ui::GREY);
+      - script.execute: update_checklist
+
+  # ── Porta e gas: chip, pianta, risorse ──
+  - id: update_security
+    then:
+      - lambda: |-
+          const std::string &p = id(ha_porta).state;
+          bool pk = p == "on" || p == "off", open = p == "on";
+          uint32_t pc = !pk ? ui::GREY : (open ? ui::RED : ui::GREEN);
+          const char *pico = open ? "\U000F081C" : "\U000F10AF";
+          ui::text(id(chip_porta_i), pico); ui::color(id(chip_porta_i), pc);
+          ui::text(id(h_porta_i), pico);    ui::color(id(h_porta_i), pc);
+          ui::text(id(h_porta_v), !pk ? "--" : (open ? "APERTA" : "chiusa"));
+          ui::color(id(h_porta_v), pc);
+          lv_obj_set_style_bg_color(id(door_mark), lv_color_hex(pk ? pc : 0x5A606A), 0);
+          const std::string &g = id(ha_gas_alarm).state;
+          bool gk = g == "on" || g == "off", gal = g == "on";
+          ui::color(id(chip_gas_i), !gk ? ui::GREY : (gal ? ui::RED : ui::GREEN));
+          ui::text(id(rs_gas_k2), !gk ? "--" : (gal ? "ALLARME" : "no"));
+          ui::color(id(rs_gas_k2), !gk ? ui::GREY : (gal ? ui::RED : ui::GREEN));
+      - script.execute: update_alarms
+      - script.execute: update_checklist
+
+  # ── Banner allarmi: uno alla volta, in ordine di gravita' ──
+  - id: update_rete
+    then:
+      - lambda: |-
+          float w = id(ha_rete_w).state, a = id(ha_rete_a).state;
+          float lim = isnan(id(ha_rete_lim).state) ? 10.0f : id(ha_rete_lim).state;
+          bool mt = id(ha_rete_mt).state == "on", live = !isnan(a);
+          bool hot = live && a > 0.9f * lim;
+          uint32_t c = mt ? ui::RED : (!live ? 0x5A606A : (hot ? ui::AMBER : ui::GREEN));
+          ui::color(id(rc_rete_i), c);
+          bool val = live && !mt;  // valori W/A/limite, altrimenti una scritta di stato
+          ui::hidden(id(rc_rete_w), !val); ui::hidden(id(rc_rete_a), !val);
+          ui::hidden(id(rc_rete_l), !val); ui::hidden(id(rc_rete_s), val);
+          ui::text(id(rc_rete_w), ui::fmt(w, 0, " W ·"));
+          ui::text(id(rc_rete_a), ui::fmt(a, 1));
+          ui::text(id(rc_rete_l), "/ " + ui::fmt(lim, 0, " A"));
+          ui::text(id(rc_rete_s), mt ? "magnetotermico giù" : "non collegata");
+          if (mt) ui::color(id(rc_rete_s), ui::RED); else ui::theme_color(id(rc_rete_s));
+          if (hot) ui::color(id(rc_rete_a), ui::AMBER); else ui::theme_color(id(rc_rete_a));
+          lv_bar_set_value(id(rc_rete_bar), live && !mt ? (int) std::fmin(100.0f, a / lim * 100.0f) : 0, LV_ANIM_OFF);
+          lv_obj_set_style_bg_color(id(rc_rete_bar), lv_color_hex(hot ? ui::AMBER : ui::GREEN), LV_PART_INDICATOR);
+          int sel = (int) std::lround(lim);
+          ui::checked(id(lim_4), sel == 4); ui::checked(id(lim_6), sel == 6);
+          ui::checked(id(lim_10), sel == 10); ui::checked(id(lim_16), sel == 16);
+      - script.execute: update_alarms
+
+  - id: update_alarms
+    then:
+      - lambda: |-
+          auto on = [](const std::string &s) { return s == "on"; };
+          std::vector<std::string> al;  // allarmi attivi, in ordine di gravita'
+          if (on(id(ha_gas_alarm).state)) al.push_back("Allarme gas in cucina: arieggia e chiudi la bombola");
+          if (on(id(ha_motore).state) && on(id(ha_porta).state)) al.push_back("Motore acceso con la porta della cellula aperta");
+          {
+            auto th = [](float v, float def) { return isnan(v) ? def : v; };
+            float mna = th(id(ha_tpms_min_ant).state, 4.3f), mnp = th(id(ha_tpms_min_post).state, 4.7f);
+            float mxa = th(id(ha_tpms_max_ant).state, 6.0f), mxp = th(id(ha_tpms_max_post).state, 6.6f);
+            struct T { float p, t, mn, mx; const char *n; } ts[] = {
+              {id(ha_p_as).state, id(ha_tt_as).state, mna, mxa, "anteriore sinistra"},
+              {id(ha_p_ad).state, id(ha_tt_ad).state, mna, mxa, "anteriore destra"},
+              {id(ha_p_ps).state, id(ha_tt_ps).state, mnp, mxp, "posteriore sinistra"},
+              {id(ha_p_pd).state, id(ha_tt_pd).state, mnp, mxp, "posteriore destra"}};
+            for (auto &t : ts) {
+              if (!isnan(t.p) && (t.p < t.mn || t.p > t.mx)) { al.push_back(std::string("Gomma ") + t.n + ": " + ui::fmt(t.p, 1, " bar")); break; }
+              if (!isnan(t.t) && t.t > 75) { al.push_back(std::string("Gomma ") + t.n + " calda: " + ui::fmt(t.t, 0, "°")); break; }
+            }
+          }
+          if (on(id(ha_rete_mt).state)) al.push_back("Magnetotermico 230V scattato: camper senza rete");
+          // testo fisso (senza gli ampere): "Ok, visto" vale finche' il testo non cambia
+          if (id(ha_rete_a).state > 0.9f * (isnan(id(ha_rete_lim).state) ? 10.0f : id(ha_rete_lim).state))
+            al.push_back("Colonnina quasi al limite: spegni qualcosa");
+          if (id(ha_batt_soc).state < 30) al.push_back("Batteria servizi sotto il 30%");
+          if (id(ha_water).state < 10) al.push_back("Acqua quasi finita");
+          if (id(ha_gas_percent).state < 10) al.push_back("Bombola del gas quasi vuota");
+          // spia del quadro (solo a chiave inserita); a chiave tolta resta la soglia: la spia si accende a ~11 L = 12%
+          if (id(ha_fuel_low).state || id(ha_fuel).state < 13) al.push_back("Riserva gasolio");
+          if (id(ha_coolant).state > 105) al.push_back("Motore caldo: liquido oltre 105°");
+          // "Ok, visto" vale per singolo allarme; sparito l'allarme, si dimentica
+          std::string seen = "|", cur;
+          std::vector<std::string> vis;
+          for (auto &x : al) {
+            if (id(alarm_seen).find("|" + x + "|") != std::string::npos) seen += x + "|";
+            else vis.push_back(x);
+          }
+          id(alarm_seen) = seen == "|" ? "" : seen;
+          // piu' allarmi non visti: ruotano (script alarm_rotate, ogni 5 s)
+          if (!vis.empty()) cur = vis[id(alarm_idx) % vis.size()];
+          id(alarm_text) = cur;
+          std::string a = al.empty() ? std::string() : (cur.empty() ? al[0] : cur);
+          bool show = !cur.empty();
+          if (vis.size() > 1) cur += "  (" + std::to_string(id(alarm_idx) % vis.size() + 1) + "/" + std::to_string(vis.size()) + ")";
+          ui::hidden(id(banner), !show);
+          ui::hidden(id(chip_porta), show);
+          ui::hidden(id(chip_gas), show);
+          ui::hidden(id(chip_stato), show);
+          ui::text(id(banner_l), cur);
+          std::string lst;
+          for (auto &x : al) {
+            bool sn = id(alarm_seen).find("|" + x + "|") != std::string::npos;
+            lst += (lst.empty() ? "" : "\n\n") + std::string("• ") + x + (sn ? "  (visto)" : "");
+          }
+          ui::text(id(al_list), lst.empty() ? std::string("Nessun allarme") : lst);
+          ui::text(id(chip_stato_i), a.empty() ? "\U000F0CC8" : "\U000F0028");
+          ui::color(id(chip_stato_i), a.empty() ? ui::GREEN : ui::AMBER);
+          ui::text(id(chip_stato_l), a.empty() ? "Nessun allarme" : "Allarme visto");
+          ui::text(id(nt_state), a.empty() ? std::string("tutto ok") : a);
+          ui::text(id(nt_state_i), a.empty() ? "\U000F0CC8" : "\U000F0028");
+
+  # Rotazione dei banner quando ce n'e' piu' di uno non visto
+  - id: alarm_rotate
+    then:
+      - lambda: 'id(alarm_idx)++;'
+      - script.execute: update_alarms
+
+  # ── Checklist "Partenza" ──
+  - id: update_checklist
+    then:
+      - lambda: |-
+          // 1 ok, 0 da sistemare, -1 dato mancante
+          auto st = [](const std::string &s, const char *good, const char *bad) {
+            return s == good ? 1 : (s == bad ? 0 : -1);
+          };
+          const std::string &fs = id(ha_frigo_state).state;
+          int frigo = (fs.empty() || fs == "unavailable" || fs == "unknown") ? -1 : (fs != "off" ? 1 : 0);
+          int res[] = {st(id(ha_porta).state, "off", "on"), st(id(ha_porte_cab).state, "off", "on"),
+                       st(id(ha_pompa).state, "off", "on"), st(id(ha_l_esterna).state, "off", "on"),
+                       st(id(ha_clima_state).state, "off", "cool"), st(id(ha_gas_alarm).state, "off", "on"), frigo};
+          lv_obj_t *ico[] = {id(chk_0_i), id(chk_1_i), id(chk_2_i), id(chk_3_i), id(chk_4_i), id(chk_5_i), id(chk_6_i)};
+          for (int i = 0; i < 7; i++) {
+            ui::text(ico[i], res[i] == 1 ? "\U000F05E0" : (res[i] == 0 ? "\U000F0159" : "\U000F0028"));
+            ui::color(ico[i], res[i] == 1 ? ui::GREEN : (res[i] == 0 ? ui::RED : ui::GREY));
+          }
+
+  # ── Veicolo e spie ──
+  - id: update_vehicle
+    then:
+      - lambda: |-
+          bool mot = id(ha_motore).state == "on";
+          float fuel = id(ha_fuel).state, km = id(ha_fuel_km).state, oil = id(ha_oil).state;
+          float cool = id(ha_coolant).state, v1 = id(ha_batt_v1).state;
+          ui::text(id(vs_ico), mot ? "\U000F01FA" : "\U000F0A47");
+          ui::color(id(vs_ico), mot ? ui::GREEN : ui::GREY);
+          ui::text(id(vs_state), mot ? "Motore acceso" : "Fermo");
+          ui::text(id(vs_sub), mot ? "in marcia o al minimo" : "motore spento");
+          ui::text(id(vs_fuel), ui::fmt(fuel, 0, "%"));
+          lv_bar_set_value(id(vs_fuel_bar), isnan(fuel) ? 0 : (int) lroundf(fuel), LV_ANIM_OFF);
+          ui::text(id(vs_fuel_km), isnan(km) ? std::string("") : "~" + ui::fmt(km, 0, " km"));
+          ui::text(id(vs_oil), ui::fmt(oil, 0, "°"));
+          ui::text(id(vs_cool), ui::fmt(cool, 0, "°"));
+          auto spy = [](lv_obj_t *i, lv_obj_t *l, const std::string &t, uint32_t c) { ui::text(l, t); ui::color(i, c); };
+          const std::string &fr = id(ha_freno).state, &po = id(ha_porte_cab).state, &lu = id(ha_anabb).state;
+          spy(id(sp_freno_i), id(sp_freno), fr == "on" ? "Freno tirato" : (fr == "off" ? "Freno libero" : "Freno a mano"),
+              fr == "on" ? ui::GREEN : (fr == "off" ? (mot ? ui::GREY : ui::AMBER) : ui::GREY));
+          spy(id(sp_porte_i), id(sp_porte), po == "on" ? "Porte aperte" : (po == "off" ? "Porte chiuse" : "Porte cabina"),
+              po == "on" ? ui::RED : (po == "off" ? ui::GREEN : ui::GREY));
+          spy(id(sp_luci_i), id(sp_luci), lu == "on" ? "Fari accesi" : (lu == "off" ? "Fari spenti" : "Luci"),
+              lu == "on" ? (mot ? ui::GREEN : ui::AMBER) : (lu == "off" ? ui::GREEN : ui::GREY));
+          spy(id(sp_olio_i), id(sp_olio), isnan(oil) ? std::string("Olio") : "Olio " + ui::fmt(oil, 0, "°"),
+              isnan(oil) ? ui::GREY : (oil > 120 ? ui::RED : ui::GREEN));
+          spy(id(sp_batt_i), id(sp_batt), isnan(v1) ? std::string("Batteria") : "Avv. " + ui::fmt(v1, 1, " V"),
+              isnan(v1) ? ui::GREY : (v1 < 11.5f ? ui::RED : (v1 < 12.1f ? ui::AMBER : ui::GREEN)));
+          spy(id(sp_liq_i), id(sp_liq), isnan(cool) ? std::string("Liquido") : "Liquido " + ui::fmt(cool, 0, "°"),
+              isnan(cool) ? ui::GREY : (cool > 105 ? ui::RED : ui::GREEN));
+      - script.execute: update_alarms
+      - script.execute: update_checklist
+
+  # ── Gomme ──
+  - id: update_tyres
+    then:
+      - lambda: |-
+          auto th = [](float v, float def) { return isnan(v) ? def : v; };
+          float mna = th(id(ha_tpms_min_ant).state, 4.3f), mnp = th(id(ha_tpms_min_post).state, 4.7f);
+          float mxa = th(id(ha_tpms_max_ant).state, 6.0f), mxp = th(id(ha_tpms_max_post).state, 6.6f);
+          int bad = 0, missing = 0;
+          auto show = [&](lv_obj_t *lp, lv_obj_t *lt, float p, float t, float mn, float mx) {
+            bool b = !isnan(p) && (p < mn || p > mx || (!isnan(t) && t > 75));
+            if (isnan(p)) missing++;
+            if (b) bad++;
+            ui::text(lp, ui::fmt(p, 1, " bar"));
+            ui::color(lp, isnan(p) ? ui::GREY : (b ? ui::RED : ui::GREEN));
+            ui::text(lt, isnan(t) ? std::string("") : ui::fmt(t, 0, "°"));
+          };
+          show(id(ty_as), id(ty_as_t), id(ha_p_as).state, id(ha_tt_as).state, mna, mxa);
+          show(id(ty_ad), id(ty_ad_t), id(ha_p_ad).state, id(ha_tt_ad).state, mna, mxa);
+          show(id(ty_ps), id(ty_ps_t), id(ha_p_ps).state, id(ha_tt_ps).state, mnp, mxp);
+          show(id(ty_pd), id(ty_pd_t), id(ha_p_pd).state, id(ha_tt_pd).state, mnp, mxp);
+          ui::text(id(ty_head), bad ? "controlla" : (missing ? "dati mancanti" : "tutte ok"));
+          uint32_t c = bad ? ui::RED : (missing ? ui::GREY : ui::GREEN);
+          ui::color(id(ty_head), c);
+          ui::color(id(ty_head_i), c);
+      - script.execute: update_alarms
+
+  # ── Livella ──
+  - id: update_level
+    then:
+      - lambda: |-
+          float x = id(ha_tilt_x).state, y = id(ha_tilt_y).state;
+          if (isnan(x) || isnan(y)) {
+            lv_obj_set_pos(id(lv_dot), 98, 98);
+            lv_obj_set_style_bg_color(id(lv_dot), lv_color_hex(ui::GREY), 0);
+            ui::text(id(lv_state), "--");
+            ui::text(id(lv_xy), "");
+            return;
+          }
+          auto cl = [](float v) { return std::fmax(-1.0f, std::fmin(1.0f, v / 3.0f)); };
+          lv_obj_set_pos(id(lv_dot), 98 + (int) lroundf(cl(x) * 98), 98 + (int) lroundf(cl(y) * 98));
+          const std::string &s = id(ha_livella).state;
+          float m = std::fmax(fabsf(x), fabsf(y));
+          bool in = s == "in_bolla" || (s != "fuori_bolla" && m <= 0.5f);
+          lv_obj_set_style_bg_color(id(lv_dot), lv_color_hex(in ? ui::GREEN : (m < 1.5f ? ui::AMBER : ui::RED)), 0);
+          ui::text(id(lv_state), in ? "In bolla" : (m < 1.5f ? "Quasi in bolla" : "Fuori bolla"));
+          ui::text(id(lv_xy), "X " + ui::fmt(x, 1, "°") + " · Y " + ui::fmt(y, 1, "°"));
+
+  # ── Luminosita' ──
+  - id: update_brightness
+    then:
+      # Applica SOLO se il display e' gia' acceso: l'automazione HA che regola
+      # la luminosita' non deve svegliare lo schermo dallo standby.
+      - if:
+          condition:
+            lambda: 'return id(display_backlight).current_values.is_on() && !id(night_on);'
+          then:
+            - light.turn_on:
+                id: display_backlight
+                brightness: !lambda 'return id(display_brightness) / 100.0;'
+      - lvgl.slider.update: { id: slider_brightness, value: !lambda 'return id(display_brightness);' }
+      - lvgl.slider.update: { id: sys_bright, value: !lambda 'return id(display_brightness);' }
+      - lambda: |-
+          std::string p = std::to_string(id(display_brightness)) + "%";
+          ui::text(id(brightness_pct), p);
+          ui::text(id(sys_bright_v), p);
+
+  - id: toggle_brightness_panel
+    mode: restart
+    then:
+      - lvgl.widget.update: { id: brightness_panel, hidden: false }
+      - lvgl.slider.update: { id: slider_brightness, value: !lambda 'return id(display_brightness);' }
+      - delay: 5s
+      - lvgl.widget.update: { id: brightness_panel, hidden: true }
+
+  # ── Utenze 12V (stato in Sistema) ──
+  # NB: non e' agganciato a on_turn_on/off dello switch — quello scatta
+  # durante il setup (restore_mode) quando LVGL non esiste ancora e il P4
+  # va in crash. Lo chiamano on_boot, pin_check e l'interval da 5s.
+  - id: update_utenze
+    then:
+      - lambda: |-
+          bool on = id(sw_utenze).state;
+          bool run = id(spegni_server).is_running() && id(ut_left) > 0;
+          // popup: conto alla rovescia in grande, poi avviso "spente" con Accendi/Chiudi
+          ui::hidden(id(ut_catch), on || run);
+          ui::hidden(id(utp_num), !run);
+          ui::hidden(id(utp_secs), !run);
+          ui::hidden(id(utp_on), run);
+          ui::hidden(id(utp_close), run);
+          if (on && !run) ui::hidden(id(ut_pop), true);
+          if (run) {
+            ui::hidden(id(ut_pop), false);
+            ui::text(id(utp_title), "Spegnimento in corso");
+            ui::text(id(utp_sub), "Server e router si spengono, poi si staccano le utenze 12V");
+            ui::text(id(utp_num), std::to_string(id(ut_left)));
+            ui::text(id(sys_ut_v), "Spegnimento server...");
+            ui::color(id(sys_ut_v), ui::ACCENT);
+            char b[24]; snprintf(b, sizeof(b), "Stacco tra %d s", id(ut_left));
+            ui::text(id(sys_ut_btn_l), b);
+            return;
+          }
+          ui::text(id(utp_title), "Utenze 12V spente");
+          ui::text(id(utp_sub), "Luci, pompa, prese 12V e Home Assistant sono senza corrente");
+          ui::text(id(sys_ut_v), on ? "Accese" : "Spente");
+          ui::color(id(sys_ut_v), on ? ui::GREEN : ui::ACCENT);
+          ui::text(id(sys_ut_btn_l), on ? "Spegni server e utenze" : "Accendi le utenze");
+
+  # Raspberry HAOS e GL.iNet stanno sulla linea utenze: prima si spengono
+  # (script HA camper_spegni_server), poi si stacca il generale. Il pannello
+  # conta da solo: HA sparisce durante lo spegnimento. Se l'API non e'
+  # connessa la chiamata si perde e il distacco avviene comunque.
+  # ponytail: niente annulla durante i 90 s, aggiungerlo se serve.
+  - id: spegni_server
+    mode: single
+    then:
+      - homeassistant.service:
+          service: script.turn_on
+          data: { entity_id: script.camper_spegni_server }
+      - lambda: 'id(ut_left) = 90;'
+      - repeat:
+          count: 90
+          then:
+            - script.execute: update_utenze
+            - delay: 1s
+            - lambda: 'id(ut_left)--;'
+      - switch.turn_off: sw_utenze
+      # lo script e' ancora "running" qui: ut_left = 0 chiude il countdown
+      - lambda: 'id(ut_left) = 0;'
+      - script.execute: update_utenze
+      - lvgl.widget.update: { id: ut_pop, hidden: false }
+
+  # ────────────────────────────────────────────────────────────
+  # Tastierino PIN per l'interruttore generale utenze
+  # Il PIN serve in ENTRAMBI i versi: una manata sul touch non deve
+  # ne' spegnere ne' riaccendere il camper.
+  # ────────────────────────────────────────────────────────────
+  - id: pin_open
+    then:
+      - lambda: 'id(pin_target) = !id(sw_utenze).state;'
+      - lvgl.label.update:
+          id: pin_title
+          text: !lambda |-
+            return id(pin_target) ? std::string("Accendere le utenze 12V?")
+                                  : std::string("Spegnere le utenze 12V?");
+      - script.execute: pin_clear
+      - lvgl.widget.update: { id: pin_panel, hidden: false }
+
+  - id: pin_clear
+    then:
+      - lambda: |-
+          id(pin_buf) = "";
+          ui::text(id(pin_dots), "");
+          ui::text(id(pin_msg), "Inserisci il PIN");
+          ui::theme_color(id(pin_msg));
+
+  - id: pin_key
+    parameters:
+      d: string
+    then:
+      - lambda: |-
+          if (id(pin_buf).size() < 6) id(pin_buf) += d;
+          ui::text(id(pin_dots), std::string(id(pin_buf).size(), '*'));
+      # 6 cifre = verifica automatica, il tasto OK resta per comodita'
+      - if:
+          condition:
+            lambda: 'return id(pin_buf).size() >= 6;'
+          then:
+            - script.execute: pin_check
+
+  - id: pin_check
+    then:
+      - if:
+          condition:
+            lambda: 'return id(pin_buf) == "${utenze_pin}";'
+          then:
+            - lvgl.widget.update: { id: pin_panel, hidden: true }
+            - lambda: 'id(pin_buf) = "";'
+            - if:
+                condition:
+                  lambda: 'return id(pin_target);'
+                then:
+                  - switch.turn_on: sw_utenze
+                else:
+                  - script.execute: spegni_server
+            - script.execute: update_utenze
+          else:
+            - lambda: |-
+                id(pin_buf) = "";
+                ui::text(id(pin_dots), "");
+                ui::text(id(pin_msg), "PIN errato");
+                ui::color(id(pin_msg), ui::RED);
+
+  - id: pin_close
+    then:
+      - lambda: 'id(pin_buf) = "";'
+      - lvgl.widget.update: { id: pin_panel, hidden: true }
+
+# ────────────────────────────────────────────────────────────
+# Audio RIMOSSO 2026-07-05: la board ha solo l'interfaccia speaker
+# (connettore 11), nessuna cassa collegata. Quando arriva la cassa
+# ripristinare da git (commit a8defef: es8311 + i2s + speaker +
+# rtttl/buzzer + media_player per TTS; ampli enable GPIO11).
+# ────────────────────────────────────────────────────────────
+
+binary_sensor:
+  # Sonda pieno grigie: bagnata = tensione sotto ~1,6 V. Ritardi lunghi contro
+  # lo sciabordio in marcia.
+  - platform: template
+    id: grey_full
+    name: "Grigie piene"
+    lambda: 'return id(grey_full_v).state < 1.6f;'
+    filters: [delayed_on: 60s, delayed_off: 60s]
+    on_press:
+      - lambda: 'id(grey_est_l) = ${grey_l}; id(update_grey).execute();'
+    on_release:
+      # Il pieno torna asciutto solo scaricando (si svuota sempre tutto)
+      - lambda: 'id(grey_est_l) = 0; id(update_grey).execute();'
+  - platform: homeassistant
+    id: ha_fuel_low
+    entity_id: binary_sensor.wican_riserva_carburante
+    on_state: { script.execute: update_alarms }
+  - platform: homeassistant
+    id: ha_presence
+    entity_id: binary_sensor.sensore_presenza_dinette_presence
+    on_press: { script.execute: presence_wake }
+    on_release:
+      - if:
+          condition:
+            lambda: 'return id(night_on);'
+          then:
+            - script.execute: saver_timeout
+  # Stato stufa dall'ESP32 Webasto dedicato (progetto a parte), via HA.
+  # Finche' l'entita' non esiste la card mostra "--".
+  - platform: homeassistant
+    id: webasto_running
+    entity_id: binary_sensor.webasto_in_funzione
+    on_state:
+      - lvgl.label.update:
+          id: lbl_webasto
+          text: !lambda 'return std::string(x ? "In funzione" : "Spenta");'
+      - lambda: |-
+          ui::text(id(st_web_v), x ? "In funzione" : "Spenta");
+          if (x) ui::color(id(st_web_v), ui::GREEN); else ui::theme_color(id(st_web_v));
+
+interval:
+  - interval: 1s
+    then:
+      - script.execute: update_clock
+
+  - interval: 6s
+    then:
+      - script.execute: alarm_rotate
+
+  # Risincronizza bottoni luce, allarmi e utenze (fallback se un evento si perde)
+  - interval: 5s
+    then:
+      - lambda: |-
+          struct L { lv_obj_t *b; esphome::homeassistant::HomeassistantTextSensor *s; } ls[] = {
+            {id(lt_princ), id(ha_l_princ)}, {id(lt_tavolo), id(ha_l_tavolo)}, {id(lt_panca), id(ha_l_panca)},
+            {id(lt_leddin), id(ha_l_leddin)}, {id(lt_corr), id(ha_l_corr)}, {id(lt_cucina), id(ha_l_cucina)},
+            {id(lt_ledcuc), id(ha_l_ledcuc)}, {id(lt_bagno), id(ha_l_bagno)}, {id(lt_doccia), id(ha_l_doccia)},
+            {id(lt_gavone), id(ha_l_gavone)}, {id(lt_esterna), id(ha_l_esterna)}, {id(lt_mans1), id(ha_l_mans1)},
+            {id(lt_mans2), id(ha_l_mans2)}, {id(lt_letto1), id(ha_l_letto1)}, {id(lt_letto2), id(ha_l_letto2)}};
+          for (auto &l : ls) ui::checked(l.b, l.s->state == "on");
+          ui::text(id(sys_ip), id(wifi_ip).state.empty() ? std::string("--") : id(wifi_ip).state);
+      - script.execute: update_lights
+      - script.execute: update_alarms
+      - script.execute: update_utenze
+
+  # Storico orario delle risorse + stime (scrive in flash una volta l'ora)
+  - interval: 60s
+    then:
+      - script.execute: history_tick
+      - lambda: |-
+          if (id(dom_on) && id(dom_warm_since) && millis() - id(dom_warm_since) >= 30UL * 60 * 1000) {
+            id(dom_on) = false; id(dom_warm_since) = 0;
+          }
+          ui::checked(id(fr_dom), id(dom_on));
