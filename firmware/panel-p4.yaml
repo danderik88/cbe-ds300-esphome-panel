@@ -1,42 +1,42 @@
 ## Dashboard camper — Guition JC8012P4A1C (ESP32-P4 + C6, 10.1" 800x1280 MIPI DSI)
 ##
-## UI v2 (docs/ui-v2): pannello della CELLULA. Barra di navigazione fissa
-## (Casa, Risorse, Clima, Veicolo, Media, Sistema), pianta vera del Prince con
-## le 15 luci, risorse con stime di autonomia calcolate sul pannello, veicolo in
-## secondo piano (gli allarmi compaiono come banner su ogni pagina).
-## Tema chiaro/scuro: switch "Dark Mode" (automazione HA camper_monitor_dark_mode).
-## WiFi via ESP32-C6 (esp-hosted), HA API. Audio rimosso (nessuna cassa).
+## UI v2 (docs/ui-v2): camper panel. Fixed navigation bar
+## (House, Resources, Climate, Vehicle, Media, System), true Prince layout with
+## the 15 lights, autonomy estimates calculated on the panel, vehicle in
+## second floor (alarms appear as banners on every page).
+## Light/dark theme: switch "Dark Mode" (HA camper_monitor_dark_mode automation).
+## WiFi via ESP32-C6 (esp-hosted), HA API. Audio removed (no speakers).
 ## Flash: see README.md.
 
 substitutions:
   device_name: monitor-camper-p4
   device_friendly: "Monitor Camper"
 
-  # ─── Interruttore generale utenze (conn 17 CBE pin 14 = C.GEN) ───
-  # PIN richiesto a schermo prima di commutare le utenze 12V.
+  # ─── General utilities switch (conn 17 CBE pin 14 = C.GEN) ───
+  # PIN required on screen before switching 12V loads.
   utenze_pin: !secret utenze_pin
 
-  # ─── Sonde NTC CBE su ADS1115 ───
-  # Misurate in camper 2026-09-28: int 12.45k @18.5 C, est 13.58k @16.5 C.
-  # Beta 3950 + R25 9.2k le rende entrambe entro 0.2 C. Beta non verificato
-  # lontano da 17 C: un punto in acqua e ghiaccio (0 C) lo conferma.
+  # ─── CBE NTC probes on ADS1115 ───
+  # Measured in camper 2026-09-28: int 12.45k @18.5 C, ext 13.58k @16.5 C.
+  # Beta 3950 + R25 9.2k make both within 0.2 C. Beta not verified
+  # away from 17 C: a point in water and ice (0 C) confirms it.
   ntc_beta: "3950"
   ntc_r25: "9.2kOhm"
   ntc_r_fixed: "10kOhm"
 
-  # ─── Risorse (stime di autonomia) ───
-  # Capacita' per convertire le percentuali: 2x100 Ah AGM, serbatoio 118 L.
+  # ─── Autonomy estimates ───
+  # Ability to convert percentages: 2x100 Ah AGM, 118 L tank.
   batt_ah: "200"
   water_l: "118"
-  # Grigie: capienza non documentata, ~210 L a occhio (2026-10-13). ponytail:
-  # la sonda di pieno riallinea la stima; correggere se si scopre il dato.
+  # Greys: undocumented capacity, ~210 L by eye (2026-10-13). ponytail:
+  # the full probe realigns the estimate; correct if the data is discovered.
   grey_l: "210"
   grey_from_fresh: "0.9"
-  # Soglia a cui la batteria si considera "finita" (AGM: sotto il 40% scatta
-  # l'avviso critico in HA). Acqua e gas contano fino a 0.
+  # Threshold at which battery is considered "empty" (AGM: below 40% triggers
+  # critical alert in HA). Water and gas count down to 0.
   batt_floor: "40"
 
-  # Home Assistant del camper (copertina album del media player)
+  # Camper Home Assistant (media player album cover)
   ha_url: !secret ha_url
 
 esphome:
@@ -48,8 +48,8 @@ esphome:
   platformio_options:
     board_build.flash_mode: dio
   on_boot:
-    # -100 = a setup completato: a 600 (come sul 7") il P4 crasha al boot
-    # perche' LVGL non e' ancora inizializzato quando parte lvgl.page.show
+    # -100 = after setup complete: at 600 (like on the 7") the P4 crashes at boot
+    # because LVGL is not yet initialized when lvgl.page.show starts
     priority: -100
     then:
       - light.turn_on: display_backlight
@@ -66,7 +66,7 @@ esphome:
 esp32:
   variant: ESP32P4
   flash_size: 16MB
-  # NB: 360MHz fa crashare il boot su questo chip (rev1.3 + engineering_sample) — vedi test 2026-07-04
+  # NB: 360MHz crashes boot on this chip (rev1.3 + engineering_sample) — see test 2026-07-04
   cpu_frequency: 400MHZ
   engineering_sample: true
   framework:
@@ -74,7 +74,7 @@ esp32:
     advanced:
       enable_idf_experimental_features: true
 
-# WiFi via ESP32-C6 co-processore (SDIO)
+# WiFi via ESP32-C6 coprocessor (SDIO)
 esp32_hosted:
   variant: esp32c6
   reset_pin: GPIO54
@@ -86,22 +86,22 @@ esp32_hosted:
   d3_pin: GPIO17
   active_high: true
   sdio_frequency: 20MHz
-  # use_psram RIMOSSO 2026-07-05: build senza gira stabile sul banco (6+ min);
-  # la config di riferimento (jtenniswood) non lo usa. L'assert sdio_mempool_create
-  # del 4/7 era un sintomo del C6 non power-cycled, non della RAM.
+  # use_psram REMOVED 2026-07-05: build without it stable on bench (6+ min);
+  # the reference config (jtenniswood) doesn't use it. The sdio_mempool_create assert
+  # on 4/7 it was a symptom of C6 not power-cycled, not the RAM.
 
 psram:
   mode: hex
   speed: 200MHz
 
-# Alimentazione PHY MIPI DSI
+# MIPI DSI PHY power supply
 esp_ldo:
   - channel: 3
     id: dsi_phy_enable
     voltage: 2.5V
     adjustable: true
 
-# gsl3680 vendorizzato (kvj/esphome@jd9365_gsl3680 + patch mark_failed per 2026.x)
+# gsl3680 vendorized (kvj/esphome@jd9365_gsl3680 + mark_failed patch for 2026.x)
 external_components:
   - source:
       type: local
@@ -110,10 +110,10 @@ external_components:
 
 logger:
   level: INFO
-  # La USB-C del pannello passa da un bridge UART0, non da USB_SERIAL_JTAG
+  # The panel's USB-C uses a UART0 bridge, not USB_SERIAL_JTAG
   hardware_uart: UART0
 
-# Stampa reset reason + heap a ogni boot — diagnosi crash silenzioso
+# Print reset reason + heap on every boot — silent crash diagnostics
 debug:
   update_interval: 30s
 
@@ -131,7 +131,7 @@ wifi:
 api:
   encryption:
     key: !secret api_key
-  # Standalone: mai riavviare se HA e' assente (pannello utile anche senza rete)
+  # Standalone: never restart if HA is absent (panel useful even without network)
   reboot_timeout: 0s
 
 ota:
@@ -154,25 +154,25 @@ i2c:
     sda_pullup_enabled: false
     scl_pullup_enabled: false
 
-# ADC esterno per le due sonde NTC della CBE: sul P4 non c'e' un ADC
-# libero (GPIO16-23 e 49-54 sono occupati o non cablati sulla board).
-# Breakout su CN4 o FPC3, ADDR a GND -> 0x48. A2/A3 restano liberi.
+# External ADC for the two CBE NTC probes: no ADC free on P4
+# free (GPIO16-23 and 49-54 are occupied or not wired on the board).
+# Breakout on CN4 or FPC3, ADDR to GND -> 0x48. A2/A3 remain free.
 ads1115:
   - id: adc_ntc
     i2c_id: bus_i2c
     address: 0x48
     continuous_mode: false
 
-# Espansore I2C sullo stesso CN4: comanda il modulo relè (hardware/interface-board-bom.md).
-# P0 = relè 1 generale utenze. Webasto spostato su ESP32 dedicato (stato via HA).
-# All'accensione le uscite sono alte = relè a riposo.
+# I2C expander on the same CN4: controls the relay module (hardware/interface-board-bom.md).
+# P0 = 1st general utilities relay. Webasto moved to dedicated ESP32 (status via HA).
+# At startup outputs are high = relay at rest.
 pcf8574:
   - id: exp_out
     i2c_id: bus_i2c
     address: 0x20
     pcf8575: false
 
-# Retroilluminazione PWM reale (sul 7" era on/off + overlay software)
+# Real PWM backlight (on the 7" it was on/off + software overlay)
 output:
   - platform: ledc
     id: backlight_pwm
@@ -186,8 +186,8 @@ light:
     restore_mode: ALWAYS_ON
     default_transition_length: 0s
     gamma_correct: 1.0
-    # Wake simmetrico: qualunque cosa accenda il backlight (HA, number
-    # luminosita) deve anche riprendere LVGL, altrimenti schermo congelato
+# Symmetric wake: anything that turns on the backlight (HA, number
+# brightness must also resume LVGL, otherwise screen freezes
     on_turn_on:
       - if:
           condition: lvgl.is_paused
@@ -209,8 +209,8 @@ display:
 
 
 # ────────────────────────────────────────────────────────────
-# Font: Montserrat da Google Fonts (pesi 500/600/700) + MDI.
-# I font built-in di LVGL non hanno le accentate, quindi non si usano.
+# Font: Montserrat from Google Fonts (weights 500/600/700) + MDI.
+# Built-in LVGL fonts don't have accented chars, so they're not used.
 # ────────────────────────────────────────────────────────────
 font:
   - file: "gfonts://Montserrat@700"
@@ -268,7 +268,7 @@ font:
     size: 76
     bpp: 4
     glyphs: "0123456789-,.°"
-  # Orologio della schermata Notte
+  # Night screen clock
   - file: "gfonts://Montserrat@700"
     id: f_b200
     size: 200
@@ -281,27 +281,27 @@ font:
     bpp: 4
     glyphs: "montercapi"
 
-  # ─── Icone MDI ───
-  # Pianta (bottoni luce)
+  # ─── MDI Icons ───
+  # Layout (light buttons)
   - file: "fonts/materialdesignicons-webfont.ttf"
     id: i_xs
     size: 20
     bpp: 4
     glyphs:
-      - "\U000F17C9"  # wall-sconce-flat-outline (mansarda)
-      - "\U000F179B"  # light-recessed (faretti panca)
+      - "\U000F17C9"  # wall-sconce-flat-outline (attic)
+      - "\U000F179B"  # light-recessed (ceiling lights on bench)
       - "\U000F05BC"  # table-furniture
       - "\U000F0769"  # ceiling-light
       - "\U000F1051"  # led-strip-variant
       - "\U000F1054"  # outdoor-lamp
       - "\U000F04DE"  # stove
-      - "\U000F0583"  # walk (corridoio)
+      - "\U000F0583"  # walk (hallway)
       - "\U000F09A1"  # shower-head
       - "\U000F09AB"  # toilet
-      - "\U000F17D0"  # lamp-outline (comodini)
-      - "\U000F12D3"  # garage-variant (gavone)
-      - "\U000F028F"  # fridge-outline (frigo sulla pianta)
-  # Righe, chip, intestazioni delle card
+      - "\U000F17D0"  # lamp-outline (nightstands)
+      - "\U000F12D3"  # garage-variant (cupboard)
+      - "\U000F028F"  # fridge-outline (fridge in the layout)
+  # Rows, chips, card headers
   - file: "fonts/materialdesignicons-webfont.ttf"
     id: i_s
     size: 24
@@ -320,11 +320,11 @@ font:
       - "\U000F0080"  # battery-70
       - "\U000F0084"  # battery-charging
       - "\U000F058C"  # water
-      - "\U000F1855"  # water-opacity (grigie)
+      - "\U000F1855"  # water-opacity (greys)
       - "\U000F140B"  # lightning-bolt
       - "\U000F06A5"  # power-plug
       - "\U000F06A6"  # power-plug-off
-      - "\U000F07E7"  # power-socket-eu (colonnina)
+      - "\U000F07E7"  # power-socket-eu (charging column)
       - "\U000F01FA"  # engine
       - "\U000F0A47"  # engine-off-outline
       - "\U000F1904"  # home-lightning-bolt-outline
@@ -398,7 +398,7 @@ font:
       - "\U000F040A"  # play
       - "\U000F03E4"  # pause
       - "\U000F0425"  # power
-      # schermata di riposo
+      # rest screen
       - "\U000F0F55"  # home-thermometer-outline
       - "\U000F0080"  # battery-70
       - "\U000F0CC8"  # shield-check-outline
@@ -421,7 +421,7 @@ font:
     size: 120
     bpp: 4
     glyphs:
-      - "\U000F075A"  # music (copertina del player)
+      - "\U000F075A"  # music (player cover)
 
 # Pianta del Prince (docs/ui-v2/prince-top.png) ruotata col muso a destra e
 # gia' composta sul colore della card: una per tema, niente filtri a runtime.
@@ -687,7 +687,7 @@ sensor:
       - lambda: |-
           float &ref = id(fresh_ref);
           if (isnan(x)) return;
-          if (isnan(ref) || x > ref + 3.0f) { ref = x; return; }  // avvio o rifornimento
+          if (isnan(ref) || x > ref + 3.0f) { ref = x; return; }  // start or refill
           if (x < ref - 1.0f) {
             id(grey_est_l) = std::min(id(grey_est_l) + (ref - x) / 100.0f * ${water_l} * ${grey_from_fresh}f, (float) ${grey_l});
             ref = x;
@@ -804,7 +804,7 @@ sensor:
           text: !lambda |-
             if (isnan(x)) return std::string("--");
             char b[16]; snprintf(b, sizeof b, "%.0f", x);
-            std::string s(b);   // separatore delle migliaia all'italiana
+            std::string s(b);   // thousand separator (Italian style)
             for (int i = (int) s.size() - 3; i > 0; i -= 3) s.insert(i, ".");
             return s;
   - platform: homeassistant
@@ -3053,7 +3053,7 @@ script:
       - lambda: |-
           id(night_on) = true;
           id(night_t) = millis();
-          // di sera tutto ambra scuro; di giorno ora grigio chiaro, il resto piu' tenue
+          // in the evening everything is amber dark; during the day grayish light, the rest thinner
           lv_style_set_text_color(id(st_saver), lv_color_hex(night ? 0x7A3A22 : 0xA8ADB4));
           lv_style_set_text_color(id(st_saver2), lv_color_hex(night ? 0x7A3A22 : 0x7A8089));
           lv_obj_report_style_change(nullptr);
@@ -3196,11 +3196,11 @@ script:
           float hg = ui::hours_left(id(hist_gas), H, gas, 0);
           auto bar = [](lv_obj_t *b, float v) { lv_bar_set_value(b, isnan(v) ? 0 : (int) lroundf(v), LV_ANIM_OFF); };
           std::string sb = charging ? std::string("in carica") : ui::short_left(hb);
-          // Casa
+          // House
           ui::text(id(hm_batt_v), ui::fmt(soc, 0, "%")); bar(id(hm_batt_bar), soc); ui::text(id(hm_batt_d), sb);
           ui::text(id(hm_acq_v), ui::fmt(wat, 0, "%"));  bar(id(hm_acq_bar), wat);  ui::text(id(hm_acq_d), ui::short_left(hw));
           ui::text(id(hm_gas_v), ui::fmt(gas, 0, "%"));  bar(id(hm_gas_bar), gas);  ui::text(id(hm_gas_d), ui::short_left(hg));
-          // Risorse
+          // Resources
           ui::text(id(rs_batt_v), ui::fmt(soc, 0, "%")); bar(id(rs_batt_bar), soc);
           ui::text(id(rs_batt_k1), sb);
           ui::text(id(rs_batt_k2), ui::fmt(cur, 1, " A"));
@@ -3215,7 +3215,7 @@ script:
           float kg_pct = (!isnan(kg) && gas > 1) ? kg / gas : NAN;
           ui::text(id(rs_gas_k3), (isnan(rg) || isnan(kg_pct)) ? std::string("--") : ui::fmt(rg > 0 ? -rg * 24 * kg_pct : 0.0f, 1, " kg"));
           ui::text(id(nt_batt), ui::fmt(soc, 0, "%"));
-          // Frase: la risorsa che finisce prima (stime arrotondate apposta)
+          // Phrase: the resource that runs out first (rounded estimates on purpose)
           struct R { float h; const char *n; } r[] = {{hb, "la batteria"}, {hw, "l'acqua"}, {hg, "il gas"}};
           std::sort(std::begin(r), std::end(r), [](const R &a, const R &b) {
             if (isnan(a.h)) return false;
@@ -3371,7 +3371,7 @@ script:
           bool hot = live && a > 0.9f * lim;
           uint32_t c = mt ? ui::RED : (!live ? 0x5A606A : (hot ? ui::AMBER : ui::GREEN));
           ui::color(id(rc_rete_i), c);
-          bool val = live && !mt;  // valori W/A/limite, altrimenti una scritta di stato
+          bool val = live && !mt;  // W/A/limite values, otherwise a status text
           ui::hidden(id(rc_rete_w), !val); ui::hidden(id(rc_rete_a), !val);
           ui::hidden(id(rc_rete_l), !val); ui::hidden(id(rc_rete_s), val);
           ui::text(id(rc_rete_w), ui::fmt(w, 0, " W ·"));
@@ -3391,7 +3391,7 @@ script:
     then:
       - lambda: |-
           auto on = [](const std::string &s) { return s == "on"; };
-          std::vector<std::string> al;  // allarmi attivi, in ordine di gravita'
+          std::vector<std::string> al;  // active alarms, in order of severity
           if (on(id(ha_gas_alarm).state)) al.push_back("Allarme gas in cucina: arieggia e chiudi la bombola");
           if (on(id(ha_motore).state) && on(id(ha_porta).state)) al.push_back("Motore acceso con la porta della cellula aperta");
           {
@@ -3409,13 +3409,13 @@ script:
             }
           }
           if (on(id(ha_rete_mt).state)) al.push_back("Magnetotermico 230V scattato: camper senza rete");
-          // testo fisso (senza gli ampere): "Ok, visto" vale finche' il testo non cambia
+          // fixed text (without amperes): "Ok, seen" holds until text changes
           if (id(ha_rete_a).state > 0.9f * (isnan(id(ha_rete_lim).state) ? 10.0f : id(ha_rete_lim).state))
             al.push_back("Colonnina quasi al limite: spegni qualcosa");
           if (id(ha_batt_soc).state < 30) al.push_back("Batteria servizi sotto il 30%");
           if (id(ha_water).state < 10) al.push_back("Acqua quasi finita");
           if (id(ha_gas_percent).state < 10) al.push_back("Bombola del gas quasi vuota");
-          // spia del quadro (solo a chiave inserita); a chiave tolta resta la soglia: la spia si accende a ~11 L = 12%
+          // dashboard indicator (only with key inserted); with key removed the threshold remains: the light turns on at ~11 L = 12%
           if (id(ha_fuel_low).state || id(ha_fuel).state < 13) al.push_back("Riserva gasolio");
           if (id(ha_coolant).state > 105) al.push_back("Motore caldo: liquido oltre 105°");
           // "Ok, visto" vale per singolo allarme; sparito l'allarme, si dimentica
@@ -3459,7 +3459,7 @@ script:
   - id: update_checklist
     then:
       - lambda: |-
-          // 1 ok, 0 da sistemare, -1 dato mancante
+          // 1 ok, 0 to fix, -1 missing data
           auto st = [](const std::string &s, const char *good, const char *bad) {
             return s == good ? 1 : (s == bad ? 0 : -1);
           };
@@ -3590,7 +3590,7 @@ script:
       - lambda: |-
           bool on = id(sw_utenze).state;
           bool run = id(spegni_server).is_running() && id(ut_left) > 0;
-          // popup: conto alla rovescia in grande, poi avviso "spente" con Accendi/Chiudi
+          // popup: large countdown, then "off" alert with Turn on/Close
           ui::hidden(id(ut_catch), on || run);
           ui::hidden(id(utp_num), !run);
           ui::hidden(id(utp_secs), !run);
