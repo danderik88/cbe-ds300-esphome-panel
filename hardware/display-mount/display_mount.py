@@ -1,12 +1,12 @@
 # Wall mount for the Guition JC8012P4A1C (10.1") in the camper.
-# Run: /Applications/FreeCAD.app/Contents/Resources/bin/freecadcmd supporto.py
-# Output (next to this file): piastra_display.step/.stl, staffa_parete.step/.stl,
-# assieme.step (with a dummy display, for checking).
+# Run: /Applications/FreeCAD.app/Contents/Resources/bin/freecadcmd display_mount.py
+# Output (next to this file): display_plate.step/.stl, wall_bracket.step/.stl,
+# assembly.step (with a dummy display, for checking).
 #
 # Two printed parts:
-#  - piastra (display plate): screwed to the 6 M2.5 bosses of the display,
+#  - display plate: screwed to the 6 M2.5 bosses of the display,
 #    carries two French-cleat hooks at the top and a lock lug at the bottom.
-#  - staffa (wall bracket): flat base covering the old panel hole (210x75),
+#  - wall bracket: flat base covering the old panel hole (210x75),
 #    two wedge towers with the mating cleats (10 deg tilt, top away from wall),
 #    two bottom pads and a lock block. One M3 screw from below goes through the
 #    lock block into a heat-set insert in the plate lug: the display cannot lift
@@ -139,7 +139,7 @@ plate_g = plate.copy(); plate_g.Placement = PL
 disp_g = disp.copy(); disp_g.Placement = PL
 
 import MeshPart
-for name, shp in (("piastra_display", plate), ("staffa_parete", bracket)):
+for name, shp in (("display_plate", plate), ("wall_bracket", bracket)):
     shp.exportStep(os.path.join(OUT, name + ".step"))
     MeshPart.meshFromShape(Shape=shp, LinearDeflection=0.05, AngularDeflection=0.2).write(os.path.join(OUT, name + ".stl"))
-Part.makeCompound([plate_g, bracket, disp_g]).exportStep(os.path.join(OUT, "assieme.step"))
+Part.makeCompound([plate_g, bracket, disp_g]).exportStep(os.path.join(OUT, "assembly.step"))

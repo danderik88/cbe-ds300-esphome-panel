@@ -13,9 +13,9 @@
   <text x="120" y="102" text-anchor="middle" fill="#555" font-size="12">distribution unit (stays)</text>
   <rect x="40" y="120" width="160" height="96" rx="6" fill="#fee2e2" stroke="#ef4444"/>
   <text x="120" y="142" text-anchor="middle" fill="#7f1d1d">main 12 V relay</text>
-  <text x="120" y="160" text-anchor="middle" fill="#7f1d1d" font-size="12">pin 14 C.GEN to GND = ON</text>
+  <text x="120" y="160" text-anchor="middle" fill="#7f1d1d" font-size="12">pin 14 to GND = ON</text>
   <text x="120" y="184" text-anchor="middle" fill="#7f1d1d">pump relay</text>
-  <text x="120" y="202" text-anchor="middle" fill="#7f1d1d" font-size="12">pin 6 C.POMPA to GND = ON</text>
+  <text x="120" y="202" text-anchor="middle" fill="#7f1d1d" font-size="12">pin 6 to GND = ON</text>
   <rect x="40" y="228" width="160" height="56" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
   <text x="120" y="250" text-anchor="middle" fill="#1e3a8a">grey tank "full" probe</text>
   <text x="120" y="268" text-anchor="middle" fill="#1e3a8a" font-size="12">pin 9 + pin 11 AGND</text>

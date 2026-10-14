@@ -1,7 +1,7 @@
 # Printed male plug for the CBE DS-300 conn 17 cable (2x8 IDC female socket,
 # 2.54 mm pitch). Replaces the shrouded box header of the old CBE panel.
-# Run: /Applications/FreeCAD.app/Contents/Resources/bin/freecadcmd connettore.py
-# Output (next to this file): spina_idc16.step/.stl
+# Run: /Applications/FreeCAD.app/Contents/Resources/bin/freecadcmd idc16_plug.py
+# Output (next to this file): idc16_plug.step/.stl
 #
 # Build (Dupont-housing style): crimp Dupont MALE terminals and push them in
 # from the back, lance facing OUTWARDS (top row up, bottom row down). The box
@@ -65,9 +65,9 @@ socket = box(-SOCKET[0] / 2, SOCKET[0] / 2, -SOCKET[1] / 2, SOCKET[1] / 2, 0.01,
     box(-4.5 / 2, 4.5 / 2, SOCKET[1] / 2 - 0.01, SOCKET[1] / 2 + 0.9, 0.01, 9.0))
 
 import MeshPart
-plug.exportStep(os.path.join(OUT, "spina_idc16.step"))
+plug.exportStep(os.path.join(OUT, "idc16_plug.step"))
 MeshPart.meshFromShape(Shape=plug, LinearDeflection=0.02, AngularDeflection=0.2).write(
-    os.path.join(OUT, "spina_idc16.stl"))
+    os.path.join(OUT, "idc16_plug.stl"))
 ok = plug.isValid() and len(plug.Solids) == 1
 fit = plug.common(socket).Volume
 flipped = socket.copy(); flipped.rotate(V(0, 0, 0), V(0, 0, 1), 180)
@@ -75,7 +75,7 @@ wrong = plug.common(flipped).Volume
 print("valid=%s solids=%d  %.0f x %.1f x %.1f mm  vol=%.1f cm3" % (
     plug.isValid(), len(plug.Solids), out_l, out_w, FLOOR + BACK_H + SHROUD_H, plug.Volume / 1000))
 print("IDC nel verso giusto: interferenza=%.2f (deve essere 0)" % fit)
-print("IDC girato 180: interferenza=%.2f (deve essere >0 = non entra)" % wrong)
-print("pin sporgenti ~%.1f mm con pin Dupont da 6 mm" % (6 - FLOOR))
+print("IDC rotated 180: interference=%.2f (must be >0 = does not fit)" % wrong)
+print("pins protrude ~%.1f mm with 6 mm Dupont pins" % (6 - FLOOR))
 ok &= fit < 0.01 and wrong > 0.5
 print("OK" if ok else "FALLITO")

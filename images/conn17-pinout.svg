@@ -16,44 +16,44 @@
       <rect width="90" height="115" rx="8" fill="#fde2e2" stroke="#d62d2d" stroke-width="2"/><text x="45" y="30" font-size="22" font-weight="bold">15</text><text x="45" y="55" font-weight="bold">B2 +12 V</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#8a6a40"/><text x="45" y="92" fill="#fff">brown</text>
     </g>
     <g transform="translate(260,100)">
-      <rect width="90" height="115" rx="8" fill="#fff4cc" stroke="#e0a800" stroke-width="2"/><text x="45" y="30" font-size="22" font-weight="bold">14</text><text x="45" y="55" font-weight="bold">C.GEN</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#d62d2d"/><text x="45" y="92" fill="#fff">red</text>
+      <rect width="90" height="115" rx="8" fill="#fff4cc" stroke="#e0a800" stroke-width="2"/><text x="45" y="30" font-size="22" font-weight="bold">14</text><text x="45" y="55" font-weight="bold">MAIN 12 V</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#d62d2d"/><text x="45" y="92" fill="#fff">red</text>
     </g>
     <g transform="translate(360,100)">
-      <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">13</text><text x="45" y="55">REC 1/3</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#f57c00"/><text x="45" y="92" fill="#fff">orange</text>
+      <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">13</text><text x="45" y="55">GREY 1/3</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#f57c00"/><text x="45" y="92" fill="#fff">orange</text>
     </g>
     <g transform="translate(460,100)">
-      <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">12</text><text x="45" y="55">B1</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#f4d000"/><text x="45" y="92">yellow</text>
+      <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">12</text><text x="45" y="55">B1 engine</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#f4d000"/><text x="45" y="92">yellow</text>
     </g>
     <g transform="translate(560,100)">
       <rect width="90" height="115" rx="8" fill="#e3f4ec" stroke="#10936d" stroke-width="2"/><text x="45" y="30" font-size="22" font-weight="bold">11</text><text x="45" y="55" font-weight="bold">AGND</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#10936d"/><text x="45" y="92" fill="#fff">green</text>
     </g>
     <g transform="translate(660,100)">
-      <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">10</text><text x="45" y="55">S.RETE</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#1f4fd8"/><text x="45" y="92" fill="#fff">blue</text>
+      <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">10</text><text x="45" y="55">MAINS IN</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#1f4fd8"/><text x="45" y="92" fill="#fff">blue</text>
     </g>
     <g transform="translate(760,100)">
-      <rect width="90" height="115" rx="8" fill="#e3f4ec" stroke="#10936d" stroke-width="2"/><text x="45" y="30" font-size="22" font-weight="bold">9</text><text x="45" y="55" font-weight="bold">REC 3/3</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#7b3fa0"/><text x="45" y="92" fill="#fff">violet</text>
+      <rect width="90" height="115" rx="8" fill="#e3f4ec" stroke="#10936d" stroke-width="2"/><text x="45" y="30" font-size="22" font-weight="bold">9</text><text x="45" y="55" font-weight="bold">GREY FULL</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#7b3fa0"/><text x="45" y="92" fill="#fff">violet</text>
     </g>
     <!-- bottom row 8..1 -->
     <g transform="translate(60,230)">
-      <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">8</text><text x="45" y="55">POT 2/3</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#10936d"/><text x="45" y="92" fill="#fff">green</text>
+      <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">8</text><text x="45" y="55">FRESH 2/3</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#10936d"/><text x="45" y="92" fill="#fff">green</text>
     </g>
     <g transform="translate(160,230)">
-      <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">7</text><text x="45" y="55">POT 3/3</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#f4d000"/><text x="45" y="92">yellow</text>
+      <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">7</text><text x="45" y="55">FRESH 3/3</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#f4d000"/><text x="45" y="92">yellow</text>
     </g>
     <g transform="translate(260,230)">
-      <rect width="90" height="115" rx="8" fill="#fff4cc" stroke="#e0a800" stroke-width="2"/><text x="45" y="30" font-size="22" font-weight="bold">6</text><text x="45" y="55" font-weight="bold">C.POMPA</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#f57c00"/><text x="45" y="92" fill="#fff">orange</text>
+      <rect width="90" height="115" rx="8" fill="#fff4cc" stroke="#e0a800" stroke-width="2"/><text x="45" y="30" font-size="22" font-weight="bold">6</text><text x="45" y="55" font-weight="bold">PUMP</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#f57c00"/><text x="45" y="92" fill="#fff">orange</text>
     </g>
     <g transform="translate(360,230)">
-      <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">5</text><text x="45" y="55">OUT D+</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#d62d2d"/><text x="45" y="92" fill="#fff">red</text>
+      <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">5</text><text x="45" y="55">D+ OUT</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#d62d2d"/><text x="45" y="92" fill="#fff">red</text>
     </g>
     <g transform="translate(460,230)">
-      <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">4</text><text x="45" y="55">R.L.EXT</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#8a6a40"/><text x="45" y="92" fill="#fff">brown</text>
+      <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">4</text><text x="45" y="55">EXT LIGHT</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#8a6a40"/><text x="45" y="92" fill="#fff">brown</text>
     </g>
     <g transform="translate(560,230)">
       <rect width="90" height="115" rx="8" fill="#fde2e2" stroke="#d62d2d" stroke-width="2"/><text x="45" y="30" font-size="22" font-weight="bold">3</text><text x="45" y="55" font-weight="bold">GND</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#1e1e1e"/><text x="45" y="92" fill="#fff">black</text>
     </g>
     <g transform="translate(660,230)">
-      <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">2</text><text x="45" y="55">POT 1/3</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#ffffff" stroke="#999"/><text x="45" y="92">white</text>
+      <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">2</text><text x="45" y="55">FRESH 1/3</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#ffffff" stroke="#999"/><text x="45" y="92">white</text>
     </g>
     <g transform="translate(760,230)">
       <rect width="90" height="115" rx="8" fill="#f2f2f2"/><text x="45" y="30" font-size="22" font-weight="bold">1</text><text x="45" y="55">n.c.</text><rect x="10" y="72" width="70" height="30" rx="4" fill="#9e9e9e"/><text x="45" y="92" fill="#fff">grey</text>
@@ -62,7 +62,7 @@
 
   <g font-size="13" fill="#222">
     <rect x="40" y="378" width="18" height="14" fill="#fde2e2" stroke="#d62d2d" stroke-width="2"/><text x="66" y="390">power: B2 +12 V (15) and GND (3). Check 12.7 V between them before anything else.</text>
-    <rect x="40" y="402" width="18" height="14" fill="#fff4cc" stroke="#e0a800" stroke-width="2"/><text x="66" y="414">commands: pull to GND (3) to switch ON. C.GEN = main 12 V loads, C.POMPA = water pump.</text>
+    <rect x="40" y="402" width="18" height="14" fill="#fff4cc" stroke="#e0a800" stroke-width="2"/><text x="66" y="414">commands: pull to GND (3) to switch ON. Pin 14 = main 12 V loads, pin 6 = water pump.</text>
     <rect x="40" y="426" width="18" height="14" fill="#e3f4ec" stroke="#10936d" stroke-width="2"/><text x="66" y="438">grey-water "full" probe: pin 9 against pin 11 (AGND is the tank electrode, NOT ground).</text>
     <text x="40" y="462" fill="#555" font-size="12">Slot row = pins 9–16, other row = pins 1–8; columns pair k with k+8. B2 and GND sit in mirrored spots: a plug rotated by 180° swaps them.</text>
   </g>

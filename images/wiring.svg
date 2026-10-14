@@ -15,9 +15,9 @@
   <text x="120" y="104" text-anchor="middle" class="s">into DS-300 connector 17</text>
   <circle cx="220" cy="140" r="6" fill="#8a6a40"/><text x="40" y="145">15 · B2 +12 V</text>
   <circle cx="220" cy="200" r="6" fill="#1e1e1e"/><text x="40" y="205">3 · GND</text>
-  <circle cx="220" cy="480" r="6" fill="#d62d2d"/><text x="40" y="485">14 · C.GEN</text>
-  <circle cx="220" cy="540" r="6" fill="#f57c00"/><text x="40" y="545">6 · C.POMPA</text>
-  <circle cx="220" cy="620" r="6" fill="#7b3fa0"/><text x="40" y="625">9 · REC 3/3</text>
+  <circle cx="220" cy="480" r="6" fill="#d62d2d"/><text x="40" y="485">14 · MAIN 12 V switch</text>
+  <circle cx="220" cy="540" r="6" fill="#f57c00"/><text x="40" y="545">6 · PUMP switch</text>
+  <circle cx="220" cy="620" r="6" fill="#7b3fa0"/><text x="40" y="625">9 · GREY TANK FULL</text>
   <circle cx="220" cy="670" r="6" fill="#10936d"/><text x="40" y="675">11 · AGND</text>
   <text x="40" y="250" class="s">other pins: not connected</text>
 
@@ -82,8 +82,8 @@
   <path class="w gnd" d="M650,450 V580 H250 V200"/>
   <path class="w gnd" d="M740,450 V580 H650"/>
   <circle cx="250" cy="200" r="5" fill="#222"/><circle cx="650" cy="580" r="5" fill="#222"/>
-  <text x="420" y="472" class="s">relay 1 NC → C.GEN (12 V loads)</text>
-  <text x="420" y="532" class="s">relay 2 NC → C.POMPA (water pump)</text>
+  <text x="420" y="472" class="s">relay 1 NC → pin 14 (12 V loads)</text>
+  <text x="420" y="532" class="s">relay 2 NC → pin 6 (water pump)</text>
   <text x="420" y="572" class="s">both COM → GND (pin 3) · NO unused</text>
 
   <!-- ===== ADS1115 ===== -->

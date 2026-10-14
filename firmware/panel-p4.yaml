@@ -14,7 +14,7 @@ substitutions:
 
   # ─── General utilities switch (conn 17 CBE pin 14 = C.GEN) ───
   # PIN required on screen before switching 12V loads.
-  utenze_pin: !secret utenze_pin
+  utenze_pin: !secret loads_pin
 
   # ─── CBE NTC probes on ADS1115 ───
   # Measured in camper 2026-09-28: int 12.45k @18.5 C, ext 13.58k @16.5 C.
