@@ -364,7 +364,7 @@ font:
       - "\U000F00DF"  # brightness-6
       - "\U000F0594"  # weather-night
       - "\U000F08A8"  # clipboard-check-outline
-  # Barra di navigazione, scene, meteo, player
+  # Navigation bar, scenes, weather, player
   - file: "fonts/materialdesignicons-webfont.ttf"
     id: i_m
     size: 32
@@ -423,8 +423,8 @@ font:
     glyphs:
       - "\U000F075A"  # music (player cover)
 
-# Pianta del Prince (docs/ui-v2/prince-top.png) ruotata col muso a destra e
-# gia' composta sul colore della card: una per tema, niente filtri a runtime.
+# Prince floor plan (docs/ui-v2/prince-top.png) rotated with the nose to the right and
+# already composited on the card colour: one per theme, no runtime filters.
 image:
   - file: images/plan_dark.png
     id: img_plan_dark
@@ -443,30 +443,30 @@ touchscreen:
     i2c_id: bus_i2c
     reset_pin: GPIO22
     interrupt_pin: GPIO21
-    # Il GSL3680 a volte non genera l'interrupt di fine tocco: senza questo
-    # fallback il touch resta "premuto" e il tap successivo viene assorbito
-    # (doppio tap dopo lo swipe). Rilettura forzata dopo 50ms di silenzio.
+    # The GSL3680 sometimes does not raise the touch-release interrupt: without this
+    # fallback the touch stays "pressed" and the next tap is swallowed
+    # (double tap after a swipe). Forced re-read after 50ms of silence.
     touch_timeout: 50ms
-    # Transform per landscape con lvgl rotation: 90 (da espcontrol, stessa board)
+    # Transform for landscape with lvgl rotation: 90 (from espcontrol, same board)
     transform:
       swap_xy: false
       mirror_x: true
       mirror_y: false
-    # Touch-to-wake (sostituisce il binary_sensor touch_any del 7")
+    # Touch-to-wake (replaces the touch_any binary_sensor of the 7")
     on_release:
       then:
         - if:
             condition:
               lvgl.is_paused
             then:
-              # Accende con la luminosita' corrente (il global puo' essere
-              # cambiato dall'automazione HA mentre lo schermo era spento)
+              # Turns on at the current brightness (the global may have been
+              # changed by the HA automation while the screen was off)
               - light.turn_on:
                   id: display_backlight
                   brightness: !lambda 'return id(display_brightness) / 100.0;'
               - lvgl.resume:
               - lvgl.widget.redraw:
-              # Spento dalla schermata con l'ora: si torna alla Casa
+              # Turned off from the clock screen: go back to House
               - if:
                   condition:
                     lambda: 'return id(night_on);'
@@ -474,7 +474,7 @@ touchscreen:
                     - script.execute: night_exit
 
 # ────────────────────────────────────────────────────────────
-# Diagnostica ESP32
+# ESP32 diagnostics
 # ────────────────────────────────────────────────────────────
 button:
   - platform: restart
@@ -485,8 +485,8 @@ button:
     name: "Safe Mode"
     icon: "mdi:shield-bug"
 
-  # Sotto 10V la DS-300 stacca le utenze e si riarma solo con OFF->ON
-  # dell'interruttore generale (manuale CBE pag. 6).
+  # Below 10V the DS-300 cuts the loads and only re-arms with OFF->ON
+  # of the main switch (CBE manual p. 6).
   - platform: template
     name: "Reset utenze 12V"
     icon: "mdi:restart-alert"
@@ -496,17 +496,17 @@ button:
       - switch.turn_on: sw_utenze
 
 # ────────────────────────────────────────────────────────────
-# Copertina dell'album (pagina Media): HA espone la copertina del media
-# player come entity_picture (proxy con token, niente login). Il pannello la
-# scarica da HA a ogni cambio e la mette al posto della nota musicale.
+# Album cover (Media page): HA exposes the media player cover as
+# entity_picture (token proxy, no login). The panel downloads it
+# from HA on every change and shows it instead of the music note.
 # ────────────────────────────────────────────────────────────
 http_request:
   timeout: 10s
 
 online_image:
   - id: cover_img
-    url: "${ha_url}/local/cover.jpg"  # rimpiazzato da set_url, mai scaricato da solo
-    # Le copertine dell'integrazione Apple TV (HomePod) arrivano in JPEG
+    url: "${ha_url}/local/cover.jpg"  # replaced by set_url, never downloaded on its own
+    # Covers from the Apple TV (HomePod) integration arrive as JPEG
     format: JPEG
     type: RGB565
     resize: 400x400
@@ -519,7 +519,7 @@ online_image:
 
 
 # ────────────────────────────────────────────────────────────
-# Diagnostica ESP32
+# ESP32 diagnostics
 # ────────────────────────────────────────────────────────────
 sensor:
   - platform: wifi_signal
@@ -537,9 +537,9 @@ sensor:
     update_interval: 60s
 
   # ────────────────────────────────────────────────────────────
-  # Sonde temperatura CBE (NTC 2 fili) su ADS1115
-  # Partitore: 3V3 -> R fissa 10k 1% -> canale ADS -> NTC -> GND
-  # A0 = sonda INTERNA, A1 = sonda ESTERNA
+  # CBE temperature probes (2-wire NTC) on ADS1115
+  # Divider: 3V3 -> fixed R 10k 1% -> ADS channel -> NTC -> GND
+  # A0 = INDOOR probe, A1 = OUTDOOR probe
   # ────────────────────────────────────────────────────────────
   - platform: ads1115
     ads1115_id: adc_ntc
@@ -572,17 +572,17 @@ sensor:
       reference_temperature: 25°C
       reference_resistance: ${ntc_r25}
     filters:
-      # Sonda staccata / in corto -> valore assurdo: non lo mostro
+      # Probe disconnected / shorted -> absurd value: don't show it
       - filter_out: nan
       - lambda: 'return (x > -40.0f && x < 90.0f) ? x : NAN;'
     on_value:
       - lambda: 'id(ntc_int_seen) = millis();'
       - script.execute: update_temps
 
-  # Sonda pieno grigie: 3V3 -> 100k -> A2 -> elettrodo; comune = pin 11 (AGND).
-  # Asciutta ~3,3 V, bagnata sotto ~1,6 V. Il serbatoio ha solo la coppia del
-  # pieno (viti blu/marrone in alto, validata col ponte 2026-10-13); REC 1/3 (A3)
-  # segue il pieno a monte nella DS-300, quindi non viene letto.
+  # Grey tank full probe: 3V3 -> 100k -> A2 -> electrode; common = pin 11 (AGND).
+  # Dry ~3.3 V, wet below ~1.6 V. The tank only has the full-level pair
+  # (blue/brown screws at the top, validated with a jumper 2026-10-13); REC 1/3 (A3)
+  # follows the full probe upstream in the DS-300, so it is not read.
   - platform: ads1115
     ads1115_id: adc_ntc
     id: grey_full_v
@@ -629,7 +629,7 @@ sensor:
       - lambda: 'id(ntc_ext_seen) = millis();'
       - script.execute: update_temps
 
-  # ─── Energia (Victron SmartShunt) ───
+  # ─── Energy (Victron SmartShunt) ───
   - platform: homeassistant
     id: ha_batt_soc
     entity_id: sensor.victron_smart_shunt_battery
@@ -662,7 +662,7 @@ sensor:
           id: rc_pow
           text: !lambda 'return ui::fmt(x, 0, " W");'
 
-  # ─── Rete 230V dalla colonnina (Sonoff MINI-ZB1GP; unavailable = colonnina staccata) ───
+  # ─── 230V mains from the hookup post (Sonoff MINI-ZB1GP; unavailable = post unplugged) ───
   - platform: homeassistant
     id: ha_rete_w
     entity_id: sensor.rete_230v_power
@@ -676,14 +676,14 @@ sensor:
     entity_id: input_number.limite_colonnina
     on_value: { script.execute: update_rete }
 
-  # ─── Acqua e gas ───
+  # ─── Water and gas ───
   - platform: homeassistant
     id: ha_water
     entity_id: sensor.esp32_serbatoio_acqua_livello_acqua
     on_value:
       - script.execute: update_resources
-      # Grigie: conta solo i cali delle chiare; isteresi contro il rumore del livello
-      # (un rumore contato solo in discesa farebbe salire la stima da solo).
+      # Greys: count only fresh water drops; hysteresis against level noise
+      # (noise counted only on the way down would make the estimate creep up by itself).
       - lambda: |-
           float &ref = id(fresh_ref);
           if (isnan(x)) return;
@@ -693,7 +693,7 @@ sensor:
             ref = x;
             id(update_grey).execute();
           }
-  # Bombola GPL a peso (esp32-panca: 4 celle + HX711)
+  # LPG cylinder by weight (esp32-panca: 4 load cells + HX711)
   - platform: homeassistant
     id: ha_gas_percent
     entity_id: sensor.panca_gas_remaining_percent
@@ -707,7 +707,7 @@ sensor:
           id: rs_gas_u
           text: !lambda 'return ui::fmt(x, 1, " kg");'
 
-  # ─── Temperature ambienti ───
+  # ─── Room temperatures ───
   - platform: homeassistant
     id: ha_t_din
     entity_id: sensor.sensore_presenza_dinette_temperature
@@ -742,7 +742,7 @@ sensor:
       - lvgl.label.update:
           id: am_frigo
           text: !lambda 'return ui::fmt(x, 1, "°");'
-  # Fallback della sonda esterna CBE
+  # Fallback for the CBE outdoor probe
   - platform: homeassistant
     id: ha_temp_ext
     entity_id: sensor.bthome_sensor_bbf7_temperatura
@@ -754,7 +754,7 @@ sensor:
     attribute: temperature
     internal: true
 
-  # ─── Frigo Vevor ───
+  # ─── Vevor fridge ───
   - platform: homeassistant
     id: ha_frigo_temp
     entity_id: climate.vevor_c50_fridge
@@ -769,7 +769,7 @@ sensor:
       - lambda: 'if (!isnan(x)) id(frigo_target) = x;'
       - script.execute: update_clima
 
-  # ─── Condizionatore (generic_thermostat, solo con 230V) ───
+  # ─── Air conditioner (generic_thermostat, only with 230V) ───
   - platform: homeassistant
     id: ha_clima_now
     entity_id: climate.climatizzatore_camper
@@ -784,7 +784,7 @@ sensor:
       - lambda: 'if (!isnan(x)) id(clima_target) = x;'
       - script.execute: update_clima
 
-  # ─── Veicolo (WiCAN / Torque) ───
+  # ─── Vehicle (WiCAN / Torque) ───
   - platform: homeassistant
     id: ha_fuel
     entity_id: sensor.livello_carburante_camper
@@ -848,7 +848,7 @@ sensor:
       - lvgl.label.update:
           id: tr_cons
           text: !lambda 'return ui::fmt(x, 1, " L");'
-  # Gomme (TPMS) + soglie regolabili dalla vista Gomme della Atoto
+  # Tyres (TPMS) + thresholds adjustable from the Atoto Tyres view
   - platform: homeassistant
     id: ha_p_as
     entity_id: sensor.pressione_anteriore_sinistra
@@ -897,7 +897,7 @@ sensor:
     id: ha_tpms_max_post
     entity_id: input_number.tpms_posteriore_massima
     internal: true
-  # Livella (media mobile 5 s in HA)
+  # Level (5 s moving average in HA)
   - platform: homeassistant
     id: ha_tilt_x
     entity_id: sensor.inclinazione_camper_x_filtrata
@@ -907,7 +907,7 @@ sensor:
     entity_id: sensor.inclinazione_camper_y_filtrata
     on_value: { script.execute: update_level }
 
-  # ─── Sistema: router GL.iNet e host HAOS ───
+  # ─── System: GL.iNet router and HAOS host ───
   - platform: homeassistant
     id: ha_router_mem
     entity_id: sensor.gl_inet_x750_memory_usage
@@ -958,7 +958,7 @@ text_sensor:
       name: "MAC Address"
       entity_category: diagnostic
 
-  # ─── Meteo, media ───
+  # ─── Weather, media ───
   - platform: homeassistant
     id: ha_weather_state
     entity_id: weather.forecast_casa
@@ -1001,7 +1001,7 @@ text_sensor:
             if (x == "unavailable") return std::string("HomePod non raggiungibile");
             return std::string("HomePod Dinette");
 
-  # ─── Frigo e condizionatore ───
+  # ─── Fridge and air conditioner ───
   - platform: homeassistant
     id: ha_frigo_state
     entity_id: climate.vevor_c50_fridge
@@ -1020,13 +1020,13 @@ text_sensor:
     id: ha_clima_sw
     entity_id: switch.climatizzatore
     on_value: { script.execute: update_clima }
-  # on = 230V presente e Broadlink raggiungibile
+  # on = 230V present and Broadlink reachable
   - platform: homeassistant
     id: ha_clima_ok
     entity_id: binary_sensor.clima_disponibile
     on_value: { script.execute: update_clima }
 
-  # ─── Energia: sorgente di carica e stato del caricabatterie ───
+  # ─── Energy: charging source and charger state ───
   - platform: homeassistant
     id: ha_charge_src
     entity_id: sensor.sorgente_carica
@@ -1037,13 +1037,13 @@ text_sensor:
     entity_id: sensor.caricabatterie_modo
     on_value:
       - lvgl.label.update: { id: rc_mode, text: !lambda 'return x == "unavailable" || x == "unknown" ? std::string("spento") : x;' }
-  # on = colonnina presente ma al camper non arriva niente (template HA, delay_on 1 min)
+  # on = hookup post present but nothing reaches the camper (HA template, delay_on 1 min)
   - platform: homeassistant
     id: ha_rete_mt
     entity_id: binary_sensor.magnetotermico_230v_scattato
     on_value: { script.execute: update_rete }
 
-  # ─── Sicurezza cellula ───
+  # ─── Living area security ───
   - platform: homeassistant
     id: ha_porta
     entity_id: binary_sensor.sensore_porta_entrata_contact
@@ -1064,7 +1064,7 @@ text_sensor:
           id: rs_acq_k2
           text: !lambda 'return x == "on" ? std::string("ON") : (x == "off" ? std::string("OFF") : std::string("--"));'
 
-  # ─── Veicolo: stati CAN ───
+  # ─── Vehicle: CAN states ───
   - platform: homeassistant
     id: ha_motore
     entity_id: binary_sensor.wican_motore_acceso
@@ -1086,7 +1086,7 @@ text_sensor:
     entity_id: sensor.livella_status
     on_value: { script.execute: update_level }
 
-  # ─── Luci: stato delle 15 luci (nomi e posizioni come sulla Atoto) ───
+  # ─── Lights: state of the 15 lights (names and positions as on the Atoto) ───
   - platform: homeassistant
     id: ha_l_princ
     entity_id: light.kincony_kc868_a16_luce_1
@@ -1179,11 +1179,11 @@ text_sensor:
       - script.execute: update_lights
 
 globals:
-  # Secondi al distacco utenze durante spegni_server (conto alla rovescia)
+  # Seconds until the loads are cut during spegni_server (countdown)
   - id: ut_left
     type: int
     initial_value: '0'
-  # Grigie stimate: litri usati dalle chiare x ${grey_from_fresh} dall'ultimo svuotamento
+  # Estimated greys: fresh litres used x${grey_from_fresh} since the last emptying
   - id: grey_est_l
     type: float
     restore_value: yes
@@ -1200,7 +1200,7 @@ globals:
     type: int
     restore_value: yes
     initial_value: '100'
-  # Setpoint correnti (specchiati da HA, per i bottoni -/+)
+  # Current setpoints (mirrored from HA, for the -/+ buttons)
   - id: clima_target
     type: float
     restore_value: no
@@ -1209,8 +1209,8 @@ globals:
     type: float
     restore_value: no
     initial_value: '4.0'
-  # Frigo Domotic (non domotizzato): acceso se l'interno scende sotto 10°,
-  # spento dopo 30 min consecutivi sopra
+  # Domotic fridge (not smart): on if the inside drops below 10°,
+  # off after 30 consecutive min above
   - id: dom_on
     type: bool
     restore_value: no
@@ -1219,21 +1219,21 @@ globals:
     type: uint32_t
     restore_value: no
     initial_value: '0'
-  # Inizio del riposo (millis): sotto 10 s il tocco torna alla pagina di prima
+  # Rest start (millis): within 10 s a touch returns to the previous page
   - id: night_t
     type: uint32_t
     initial_value: '0'
-  # Pagina attiva: 0 Casa, 1 Risorse, 2 Clima, 3 Veicolo, 4 Media, 5 Sistema
+  # Active page: 0 House, 1 Resources, 2 Climate, 3 Vehicle, 4 Media, 5 System
   - id: cur_page
     type: int
     restore_value: no
     initial_value: '0'
-  # Schermata Notte attiva: niente spegnimento automatico del backlight
+  # Night screen active: no automatic backlight off
   - id: night_on
     type: bool
     restore_value: no
     initial_value: 'false'
-  # millis() dell'ultima lettura valida delle NTC locali (0 = mai lette)
+  # millis() of the last valid reading of the local NTCs (0 = never read)
   - id: ntc_int_seen
     type: uint32_t
     restore_value: no
@@ -1242,7 +1242,7 @@ globals:
     type: uint32_t
     restore_value: no
     initial_value: '0'
-  # Tastierino PIN utenze
+  # Loads PIN keypad
   - id: pin_buf
     type: std::string
     restore_value: no
@@ -1251,7 +1251,7 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'false'
-  # Banner allarmi: testo corrente e testo gia' visto ("Ok, visto")
+  # Alarm banner: current text and already-seen text ("Ok, visto")
   - id: alarm_text
     type: std::string
     restore_value: no
@@ -1264,8 +1264,8 @@ globals:
     type: int
     restore_value: no
     initial_value: '0'
-  # Storico orario delle risorse (72 h, % 0-100, 255 = nessun dato).
-  # Salvato in flash: si scrive una volta l'ora, le stime sopravvivono ai riavvii.
+  # Hourly resource history (72 h, % 0-100, 255 = no data).
+  # Saved in flash: written once an hour, estimates survive reboots.
   - id: hist_batt
     type: std::array<uint8_t, 72>
     restore_value: yes
@@ -1275,7 +1275,7 @@ globals:
   - id: hist_gas
     type: std::array<uint8_t, 72>
     restore_value: yes
-  # Copertina album: URL corrente (entity_picture) e ultimo scaricato
+  # Album cover: current URL (entity_picture) and last downloaded
   - id: cover_url
     type: std::string
     restore_value: no
@@ -1288,13 +1288,13 @@ globals:
     type: int
     restore_value: yes
     initial_value: '0'
-  # Ora (epoch/3600) dell'ultimo campione; 0 = storico mai inizializzato
+  # Hour (epoch/3600) of the last sample; 0 = history never initialized
   - id: hist_hour
     type: uint32_t
     restore_value: yes
     initial_value: '0'
 
-# Dark mode esposto a HA: lo commuta l'automazione camper_monitor_dark_mode (lux)
+# Dark mode exposed to HA: toggled by the camper_monitor_dark_mode automation (lux)
 switch:
   - platform: template
     id: sw_dark_mode
@@ -1309,14 +1309,14 @@ switch:
       - script.execute: apply_theme
 
   # ────────────────────────────────────────────────────────────
-  # Interruttore generale utenze — conn 17 CBE, pin 14 (C.GEN), a livello
-  # (verificato 2026-08-13: pin 14 a GND = utenze accese).
-  # PCF8574 P0 -> IN1 del modulo relè (low level trigger). Il 2026-10-13 il
-  # relè non scattava per un Dupont bianco rotto, non per il pin. Relè 1: COM -> pin 3,
-  # NC -> pin 14. P0 alto = relè a riposo = NC chiuso = utenze ON, quindi
-  # nessuna inversione. Pannello spento/guasto = utenze accese.
-  # Sulla linea utenze ci sono anche Raspberry HAOS e GL.iNet: si spegne
-  # solo passando dallo script spegni_server.
+  # Main loads switch — CBE conn 17, pin 14 (C.GEN), level-driven
+  # (verified 2026-08-13: pin 14 to GND = loads on).
+  # PCF8574 P0 -> IN1 of the relay module (low level trigger). On 2026-10-13 the
+  # relay did not click because of a broken white Dupont, not the pin. Relay 1: COM -> pin 3,
+  # NC -> pin 14. P0 high = relay at rest = NC closed = loads ON, so
+  # no inversion. Panel off/faulty = loads on.
+  # The HAOS Raspberry and the GL.iNet are on the loads line too: switch off
+  # only through the spegni_server script.
   - platform: gpio
     id: sw_utenze
     name: "Utenze 12V"
@@ -1326,13 +1326,13 @@ switch:
       number: 0
       mode:
         output: true
-    # Il camper deve ripartire ACCESO dopo un reboot del pannello
+    # The camper must come back ON after a panel reboot
     restore_mode: RESTORE_DEFAULT_ON
 
-  # Pompa acqua — PCF8574 P1 -> IN2, relè 2: COM -> conn17 pin 3 (GND),
-  # NC -> pin 6 (C.POMPA), al posto del ponte fisso. P1 alto = NC chiuso =
-  # pompa alimentata. Per lavori o perdite nel vano serbatoio. L'ESP del
-  # serbatoio sta sulla stessa linea: spenta la pompa, sparisce anche lui.
+  # Water pump — PCF8574 P1 -> IN2, relay 2: COM -> conn17 pin 3 (GND),
+  # NC -> pin 6 (C.POMPA), instead of the fixed jumper. P1 high = NC closed =
+  # pump powered. For maintenance or leaks in the tank bay. The tank ESP
+  # is on the same line: with the pump off, it goes offline too.
   - platform: gpio
     id: sw_pompa
     name: "Pompa acqua"
@@ -1342,7 +1342,7 @@ switch:
       number: 1
       mode:
         output: true
-    # Ad ogni accensione la pompa riparte alimentata
+    # On every boot the pump comes back powered
     restore_mode: ALWAYS_ON
 
 
@@ -1365,17 +1365,17 @@ number:
 
 # ────────────────────────────────────────────────────────────
 # LVGL — UI v2 (docs/ui-v2)
-# Coordinate a schermo 1280x800: barra di navigazione 0-104, contenuto
-# x 124-1260, barra in alto y 16-80, contenuto y 96-784.
-# Colori: TUTTI negli stili qui sotto (valori del tema scuro); apply_theme li
-# riscrive per il tema chiaro. I widget non mettono colori di tema in linea,
-# solo quelli semantici (verde/ambra/rosso/blu/arancio) uguali nei due temi.
+# Screen coordinates 1280x800: navigation bar 0-104, content
+# x 124-1260, top bar y 16-80, content y 96-784.
+# Colours: ALL in the styles below (dark theme values); apply_theme
+# rewrites them for the light theme. Widgets set no inline theme colours,
+# only semantic ones (green/amber/red/blue/orange), same in both themes.
 # ────────────────────────────────────────────────────────────
 lvgl:
   id: lvgl_comp
   displays: [lcd]
   touchscreens: [touch]
-  # Pannello nativo 800x1280 portrait -> UI 1280x800 landscape
+  # Native 800x1280 portrait panel -> 1280x800 landscape UI
   rotation: 90
   byte_order: little_endian
   buffer_size: 25%
@@ -1405,13 +1405,13 @@ lvgl:
     - { id: st_ghost, bg_opa: TRANSP, border_width: 0, shadow_width: 0, pad_all: 0 }
     - { id: st_modeon, bg_color: 0xE8845C, bg_opa: COVER, text_color: 0xFFFFFF }
     - { id: st_trans, bg_opa: TRANSP, border_width: 0, pad_all: 0, radius: 0 }
-    # Schermata di riposo: ambra scuro di notte, chiaro di giorno (night_enter)
+    # Rest screen: dark amber at night, light by day (night_enter)
     - { id: st_saver, text_color: 0x7A3A22 }
     - { id: st_saver2, text_color: 0x7A3A22 }
 
-  # Riposo: dopo 30 s senza tocchi compare la schermata con ora, data,
-  # temperature e stato (ambra su nero col tema scuro, chiara col tema chiaro).
-  # Un tocco riporta alla Casa.
+  # Rest: after 30 s without touches the screen with time, date,
+  # temperatures and status appears (amber on black in dark theme, light in light theme).
+  # A touch goes back to House.
   on_idle:
     timeout: 30s
     then:
@@ -1421,10 +1421,10 @@ lvgl:
           then:
             - script.execute: { id: night_enter, night: !lambda 'return id(dark_mode);' }
 
-  # ═══════════════ TOP LAYER: barra laterale, barra in alto, pannelli ═══════════════
+  # ═══════════════ TOP LAYER: side bar, top bar, panels ═══════════════
   top_layer:
     widgets:
-      # ── Barra di navigazione ──
+      # ── Navigation bar ──
       - obj:
           id: rail
           x: 0
@@ -1486,7 +1486,7 @@ lvgl:
                   - label: { align: BOTTOM_MID, y: -12, text: "Sistema", text_font: f_s14 }
                 on_click: { script.execute: { id: nav, idx: 5 } }
 
-      # ── Barra in alto: ora, data, stato cellula / banner allarmi ──
+      # ── Top bar: time, date, living area status / alarm banner ──
       - obj:
           id: topbar
           x: 124
@@ -1572,7 +1572,7 @@ lvgl:
                   - label: { align: CENTER, text: "\U000F00DF", text_font: i_m }
                 on_click: { script.execute: toggle_brightness_panel }
 
-      # ── Pannello luminosita' (appare dall'icona, sparisce dopo 5 s) ──
+      # ── Brightness panel (opens from the icon, hides after 5 s) ──
       - obj:
           id: brightness_panel
           x: 496
@@ -1597,13 +1597,13 @@ lvgl:
                 radius: 9
                 indicator: { bg_color: 0xE8845C, radius: 9 }
                 knob: { bg_color: 0xE8845C, radius: 14, pad_all: 6 }
-                # on_change: solo il tocco, non gli aggiornamenti da update_brightness
+                # on_change: touch only, not the updates from update_brightness
                 on_change:
                   - globals.set: { id: display_brightness, value: !lambda 'return (int)x;' }
                   - script.execute: update_brightness
             - label: { id: brightness_pct, x: 550, y: 26, width: 70, text_align: RIGHT, text: "100%", styles: st_mut }
 
-      # ── Lista allarmi (si apre dal chip "Allarme visto") ──
+      # ── Alarm list (opens from the "Allarme visto" chip) ──
       - obj:
           id: alarm_panel
           x: 340
@@ -1628,7 +1628,7 @@ lvgl:
                 on_click:
                   - lvgl.widget.update: { id: alarm_panel, hidden: true }
 
-      # ── Limite della colonnina (si apre dalla riga Colonnina in Risorse) ──
+      # ── Hookup post limit (opens from the Colonnina row in Resources) ──
       - obj:
           id: lim_panel
           x: 340
@@ -1677,7 +1677,7 @@ lvgl:
                 on_click:
                   - lvgl.widget.update: { id: lim_panel, hidden: true }
 
-      # ── Checklist "Partenza" ──
+      # ── "Partenza" (departure) checklist ──
       - obj:
           id: check_panel
           x: 340
@@ -1716,10 +1716,10 @@ lvgl:
                 on_click:
                   - lvgl.widget.update: { id: check_panel, hidden: true }
 
-      # ── Utenze 12V: conto alla rovescia dello stacco + avviso a utenze spente ──
-      # A utenze spente il velo trasparente copre le pagine (non la barra
-      # laterale): qualsiasi tocco, per esempio su una luce, riapre l'avviso.
-      # Lo gestisce update_utenze.
+      # ── 12V loads: cut-off countdown + notice when the loads are off ──
+      # With the loads off a transparent veil covers the pages (not the side
+      # bar): any touch, e.g. on a light, reopens the notice.
+      # Handled by update_utenze.
       - obj:
           id: ut_catch
           x: 104
@@ -1778,7 +1778,7 @@ lvgl:
                       on_click:
                         - lvgl.widget.update: { id: ut_pop, hidden: true }
 
-      # ── Tastierino PIN utenze (sopra a tutto) ──
+      # ── Loads PIN keypad (on top of everything) ──
       - obj:
           id: pin_panel
           x: 380
@@ -1832,11 +1832,11 @@ lvgl:
             arc_color: 0x21262D
             indicator: { arc_color: 0xE8845C }
 
-    # ═══════════════ CASA ═══════════════
+    # ═══════════════ HOUSE ═══════════════
     - id: page_home
       styles: st_page
       widgets:
-        # ── Pianta con le 15 luci ──
+        # ── Floor plan with the 15 lights ──
         - obj:
             id: card_plan
             x: 124
@@ -1847,9 +1847,9 @@ lvgl:
             scrollable: false
             widgets:
               - image: { id: plan_img, x: 20, y: 20, src: img_plan_dark }
-              # Porta d'ingresso della cellula (lato destro = in alto col muso a sinistra)
+              # Living area entrance door (right side = top with the nose to the left)
               - obj: { id: door_mark, x: 370, y: 66, width: 62, height: 8, radius: 4, bg_color: 0x34C759, border_width: 0, clickable: false, scrollable: false }
-              # Bottoni luce: pianta ruotata di 180° (muso/mansarda a sinistra)
+              # Light buttons: floor plan rotated 180° (nose/attic to the left)
               - button:
                   <<: &lt { width: 52, height: 52, radius: 26, checkable: true, styles: st_light, checked: { styles: st_on } }
                   id: lt_mans1
@@ -1985,7 +1985,7 @@ lvgl:
                     - label: { align: TOP_MID, y: 7, text: "\U000F12D3", text_font: i_xs }
                     - label: { align: BOTTOM_MID, y: -6, text: "Gavone", text_font: f_t11 }
                   on_click: { homeassistant.service: { service: light.toggle, data: { entity_id: light.shellyplus1_d0ef76d9cac0_switch_0 } } }
-              # Frigo: solo stato, blu = acceso. Vevor nel gavone, Domotic sul simbolo vicino alla porta
+              # Fridge: status only, blue = on. Vevor in the locker, Domotic on the symbol near the door
               - obj:
                   <<: &fr { width: 52, height: 52, radius: 26, scrollable: false, styles: st_light, checked: { styles: st_cold } }
                   id: fr_vevor
@@ -2012,7 +2012,7 @@ lvgl:
                     - label: { align: TOP_MID, y: 7, text: "\U000F028F", text_font: i_xs }
                     - label: { align: BOTTOM_MID, y: -6, text: "Frigo", text_font: f_t11 }
 
-              # ── Colonna destra: stato della casa ──
+              # ── Right column: house status ──
               - label: { x: 818, y: 18, text: "\U000F11D4", text_font: i_s, text_color: 0xE8845C }
               - label: { x: 852, y: 22, text: "LA CASA", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
               - label: { id: lights_count, x: 818, y: 56, text: "--", text_font: f_b20, text_color: 0xF5B461 }
@@ -2046,7 +2046,7 @@ lvgl:
                         data:
                           entity_id: "light.kincony_kc868_a16_luce_1, light.shellyplus1_441793a44110_switch_0, light.faretti_panca, light.kincony_kc868_a16_luce_9, light.kincony_kc868_a16_luce_2, light.kincony_kc868_a16_luce_3, light.esp32_cucina_led_switch, light.kincony_kc868_a16_luce_4, light.shelly1_34945479f8e1, light.shellyplus1_d0ef76d9cac0_switch_0, light.kincony_kc868_a16_luce_12, light.esp32_mansarda_luce_1, light.esp32_mansarda_luce_2, light.esp32_letto_luce_letto_1, light.esp32_letto_luce_letto_2"
 
-        # ── Risorse (percentuale in grande, stima in piccolo) ──
+        # ── Resources (large percentage, small estimate) ──
         - obj:
             x: 124
             y: 472
@@ -2058,13 +2058,13 @@ lvgl:
               - label: { x: 20, y: 18, text: "\U000F051F", text_font: i_s, text_color: 0xE8845C }
               - label: { x: 52, y: 22, text: "RISORSE", text_font: f_h15, styles: st_mut, text_letter_space: 2 }
               - label: { id: hm_head, x: 180, y: 20, width: 420, text_align: RIGHT, text: "", styles: st_txt, long_mode: DOT }
-              # Batteria
+              # Battery
               - label: { x: 20, y: 68, text: "\U000F0080", text_font: i_s, text_color: 0x34C759 }
               - label: { x: 48, y: 71, text: "Batteria", text_font: f_s15, styles: st_mut }
               - label: { id: hm_batt_v, x: 20, y: 100, text: "--", text_font: f_b36, styles: st_txt }
               - bar: { id: hm_batt_bar, x: 20, y: 148, width: 130, height: 10, value: 0, styles: st_track, radius: 5, indicator: { bg_color: 0x34C759, radius: 5 } }
               - label: { id: hm_batt_d, x: 20, y: 166, text: "", text_font: f_s14, styles: st_mut }
-              # Acqua
+              # Water
               - label: { x: 171, y: 68, text: "\U000F058C", text_font: i_s, text_color: 0x5AA9E6 }
               - label: { x: 199, y: 71, text: "Acqua", text_font: f_s15, styles: st_mut }
               - label: { id: hm_acq_v, x: 171, y: 100, text: "--", text_font: f_b36, styles: st_txt }
@@ -2076,14 +2076,14 @@ lvgl:
               - label: { id: hm_gas_v, x: 322, y: 100, text: "--", text_font: f_b36, styles: st_txt }
               - bar: { id: hm_gas_bar, x: 322, y: 148, width: 130, height: 10, value: 0, styles: st_track, radius: 5, indicator: { bg_color: 0xF0A500, radius: 5 } }
               - label: { id: hm_gas_d, x: 322, y: 166, text: "", text_font: f_s14, styles: st_mut }
-              # Grigie: stima dai consumi delle chiare, riallineata dalla sonda di pieno
+              # Greys: estimate from fresh water use, realigned by the full probe
               - label: { x: 473, y: 68, text: "\U000F1855", text_font: i_s, text_color: 0xA08868 }
               - label: { x: 501, y: 71, text: "Grigie", text_font: f_s15, styles: st_mut }
               - label: { id: hm_gri_v, x: 473, y: 100, text: "--", text_font: f_b36, styles: st_txt }
               - bar: { id: hm_gri_bar, x: 473, y: 148, width: 130, height: 10, value: 0, styles: st_track, radius: 5, indicator: { bg_color: 0xA08868, radius: 5 } }
               - label: { id: hm_gri_d, x: 473, y: 166, text: "", text_font: f_s14, styles: st_mut }
 
-        # ── Dentro / fuori ──
+        # ── Inside / outside ──
         - obj:
             x: 760
             y: 472
@@ -2099,7 +2099,7 @@ lvgl:
               - label: { id: meteo_ico, x: 18, y: 146, text: "\U000F0595", text_font: i_m, text_color: 0xF0A500 }
               - label: { id: fuori_v, x: 58, y: 153, width: 176, height: 22, text: "--", styles: st_mut, long_mode: DOT }
 
-        # ── Stato impianti (tap su Pompa = accende/spegne) ──
+        # ── Systems status (tap on Pompa = on/off) ──
         - obj:
             x: 1026
             y: 472
@@ -2131,7 +2131,7 @@ lvgl:
                   styles: st_ghost
                   on_click: { homeassistant.service: { service: switch.toggle, data: { entity_id: switch.esp32_serbatoio_acqua_pompa } } }
 
-        # ── Scene ──
+        # ── Scenes ──
         - button:
             <<: &scene { y: 696, width: 214, height: 88, styles: [st_card, st_txt] }
             x: 124
@@ -2146,7 +2146,7 @@ lvgl:
               - label: { align: LEFT_MID, x: 40, text: "\U000F0A48", text_font: i_m, text_color: 0xE8845C }
               - label: { align: LEFT_MID, x: 90, text: "Esco", text_font: f_b20 }
             on_click: { homeassistant.service: { service: input_boolean.turn_on, data: { entity_id: input_boolean.esco_camper } } }
-        # Cena: faretti del tavolo e della panca, luce principale spenta
+        # Dinner: table and bench spotlights, main light off
         - button:
             <<: *scene
             x: 584
@@ -2160,7 +2160,7 @@ lvgl:
               - homeassistant.service:
                   service: light.turn_off
                   data: { entity_id: light.kincony_kc868_a16_luce_1 }
-        # Notte: script buonanotte di HA + schermata Notte sul pannello
+        # Night: HA goodnight script + Night screen on the panel
         - button:
             <<: *scene
             x: 814
@@ -2181,7 +2181,7 @@ lvgl:
               - script.execute: update_checklist
               - lvgl.widget.update: { id: check_panel, hidden: false }
 
-    # ═══════════════ RISORSE ═══════════════
+    # ═══════════════ RESOURCES ═══════════════
     - id: page_risorse
       styles: st_page
       widgets:
@@ -2198,7 +2198,7 @@ lvgl:
               - label: { id: rs_head, x: 96, y: 40, width: 600, text: "--", text_font: f_b48, styles: st_txt, long_mode: DOT }
               - label: { id: rs_para, x: 700, y: 20, width: 416, text: "", styles: st_mut, long_mode: WRAP }
 
-        # Quattro card risorsa: header, % grande, barra, 3 righe
+        # Four resource cards: header, large %, bar, 3 rows
         - obj:
             <<: &rescard { y: 224, width: 272, height: 292, styles: st_card, scrollable: false }
             x: 124
@@ -2262,7 +2262,7 @@ lvgl:
               - label: { x: 20, y: 162, text: "Sonde", styles: st_mut }
               - label: { id: rs_gri_k1, x: 110, y: 161, width: 142, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
               - obj: { x: 20, y: 196, width: 232, height: 1, styles: st_sep, clickable: false }
-              # Per gli scarichi fatti prima che l'acqua arrivi alla sonda di pieno
+              # For tanks emptied before the water reaches the full probe
               - button:
                   x: 20
                   y: 212
@@ -2274,7 +2274,7 @@ lvgl:
                   on_long_press:
                     - lambda: 'id(grey_est_l) = 0; id(update_grey).execute();'
 
-        # Ricarica
+        # Charging
         - obj:
             x: 124
             y: 532
@@ -2297,7 +2297,7 @@ lvgl:
               - label: { x: 56, y: 150, text: "Batteria", styles: st_txt }
               - label: { id: rc_pow, x: 200, y: 148, width: 160, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
               - obj: { x: 20, y: 184, width: 340, height: 1, styles: st_sep, clickable: false }
-              # Colonnina: W · A / limite, barra verso il limite; il tocco apre la scelta del limite
+              # Hookup post: W · A / limit, bar towards the limit; a touch opens the limit picker
               - label: { id: rc_rete_i, x: 20, y: 194, text: "\U000F07E7", text_font: i_s, text_color: 0x5A606A }
               - label: { x: 56, y: 196, text: "Colonnina", styles: st_txt }
               - obj:
@@ -2325,7 +2325,7 @@ lvgl:
                   on_click:
                     - lvgl.widget.update: { id: lim_panel, hidden: false }
 
-        # Andamento ultimi 3 giorni (campioni orari salvati sul pannello)
+        # Last 3 days trend (hourly samples stored on the panel)
         - obj:
             x: 520
             y: 532
@@ -2364,11 +2364,11 @@ lvgl:
               - label: { x: 489, y: 226, text: "ieri", text_font: f_s14, styles: st_dim }
               - label: { x: 680, y: 226, text: "ora", text_font: f_s14, styles: st_dim }
 
-    # ═══════════════ CLIMA ═══════════════
+    # ═══════════════ CLIMATE ═══════════════
     - id: page_clima
       styles: st_page
       widgets:
-        # ── Frigo Vevor ──
+        # ── Vevor fridge ──
         - obj:
             x: 124
             y: 96
@@ -2444,7 +2444,7 @@ lvgl:
                         else:
                           - homeassistant.service: { service: climate.turn_off, data: { entity_id: climate.vevor_c50_fridge } }
 
-        # ── Condizionatore (Dometic via IR, solo con 230V) ──
+        # ── Air conditioner (Dometic via IR, only with 230V) ──
         - obj:
             x: 542
             y: 96
@@ -2517,7 +2517,7 @@ lvgl:
                     - homeassistant.service: { service: climate.set_hvac_mode, data: { entity_id: climate.climatizzatore_camper, hvac_mode: "off" } }
                     - homeassistant.service: { service: switch.turn_off, data: { entity_id: switch.climatizzatore } }
 
-        # ── Webasto: stato da HA (ESP32 Webasto dedicato) ──
+        # ── Webasto: status from HA (dedicated Webasto ESP32) ──
         - obj:
             x: 960
             y: 96
@@ -2534,7 +2534,7 @@ lvgl:
               - obj: { x: 110, y: 222, width: 80, height: 56, radius: 16, styles: [st_tile, st_dim], clickable: false, widgets: [label: { align: CENTER, text: "1 h", text_font: f_b20 }] }
               - obj: { x: 200, y: 222, width: 80, height: 56, radius: 16, styles: [st_tile, st_dim], clickable: false, widgets: [label: { align: CENTER, text: "\U000F0425", text_font: i_s }] }
 
-        # ── Temperature degli ambienti ──
+        # ── Room temperatures ──
         - obj:
             x: 960
             y: 412
@@ -2560,7 +2560,7 @@ lvgl:
               - label: { x: 20, y: 316, text: "Esterna", styles: st_mut }
               - label: { id: am_ext, x: 140, y: 310, width: 140, text_align: RIGHT, text: "--", text_font: f_b26, styles: st_txt }
 
-    # ═══════════════ VEICOLO (secondario: il focus veicolo e' della Atoto) ═══════════════
+    # ═══════════════ VEHICLE (secondary: the Atoto is the main vehicle display) ═══════════════
     - id: page_veicolo
       styles: st_page
       widgets:
@@ -2593,7 +2593,7 @@ lvgl:
               - label: { x: 20, y: 424, text: "Km totali", styles: st_mut }
               - label: { id: vs_km, x: 170, y: 423, width: 150, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
 
-        # ── Gomme (muso a destra: lato sinistro in alto) ──
+        # ── Tyres (nose to the right: left side at the top) ──
         - obj:
             x: 480
             y: 96
@@ -2616,7 +2616,7 @@ lvgl:
               - label: { id: ty_ad_t, x: 240, y: 382, width: 180, text_align: RIGHT, text: "", text_font: f_s15, styles: st_mut }
               - label: { x: 20, y: 440, width: 400, text_align: CENTER, text: "muso a destra · soglie della vista Gomme", text_font: f_s14, styles: st_dim }
 
-        # ── Livella ──
+        # ── Level ──
         - obj:
             x: 936
             y: 96
@@ -2646,7 +2646,7 @@ lvgl:
               - label: { id: lv_xy, x: 20, y: 372, width: 284, text_align: CENTER, text: "", text_font: f_s15, styles: st_mut }
               - label: { x: 20, y: 420, width: 284, text_align: CENTER, text: "bolla al centro = in piano", text_font: f_s14, styles: st_dim }
 
-        # ── Ultimo viaggio (TRIP del cruscotto via CAN) ──
+        # ── Last trip (dashboard TRIP via CAN) ──
         - obj:
             x: 124
             y: 588
@@ -2662,7 +2662,7 @@ lvgl:
               - obj: { <<: *trip, x: 278, widgets: [label: { x: 14, y: 12, text: "Media", text_font: f_s15, styles: st_mut }, label: { id: tr_avg, x: 14, y: 40, text: "--", text_font: f_b20 }] }
               - obj: { <<: *trip, x: 407, widgets: [label: { x: 14, y: 12, text: "L/100 km", text_font: f_s15, styles: st_mut }, label: { id: tr_cons, x: 14, y: 40, text: "--", text_font: f_b20 }] }
 
-        # ── Spie ──
+        # ── Warning lights ──
         - obj:
             x: 680
             y: 588
@@ -2756,7 +2756,7 @@ lvgl:
                     - label: { align: CENTER, x: 20, text: "Vol +", text_font: f_b20 }
                   on_click: { homeassistant.service: { service: media_player.volume_up, data: { entity_id: media_player.homepod_mini } } }
 
-    # ═══════════════ SISTEMA ═══════════════
+    # ═══════════════ SYSTEM ═══════════════
     - id: page_sistema
       styles: st_page
       widgets:
@@ -2873,7 +2873,7 @@ lvgl:
               - label: { x: 20, y: 264, text: "IP pannello", styles: st_mut }
               - label: { id: sys_ip, x: 300, y: 262, width: 240, text_align: RIGHT, text: "--", text_font: f_b20, styles: st_txt }
 
-    # ═══════════════ RIPOSO / NOTTE: ora e stato su nero (colori da night_enter) ═══════════════
+    # ═══════════════ REST / NIGHT: time and status on black (colours from night_enter) ═══════════════
     - id: page_notte
       skip: true
       bg_color: 0x000000
@@ -2893,7 +2893,7 @@ lvgl:
             widgets:
               - label: { id: nt_clock, align: CENTER, y: -170, text: "--:--", text_font: f_b200, styles: st_saver }
               - label: { id: nt_date, align: CENTER, y: -20, text: "", text_font: f_b36, styles: st_saver2 }
-              # traccia in riproduzione (solo mentre suona)
+              # track playing (only while it plays)
               - obj:
                   id: nt_music
                   align: CENTER
@@ -2910,7 +2910,7 @@ lvgl:
                   widgets:
                     - label: { text: "\U000F075A", text_font: i_m, styles: st_saver2 }
                     - label: { id: nt_track, text: "", text_font: f_b36, styles: st_saver2, width: SIZE_CONTENT, max_width: 1050 }
-              # temperature, batteria, stato
+              # temperatures, battery, status
               - obj:
                   align: CENTER
                   y: 230
@@ -2954,7 +2954,7 @@ script:
           ui::text(id(hm_gri_d), full ? "piene" : "stima");
           ui::text(id(rs_gri_k1), full ? "Piene" : "Non piene");
           ui::text(id(rs_gri_u), (std::to_string((int) id(grey_est_l)) + " L").c_str());
-  # Tema: riscrive gli stili condivisi e fa ridisegnare tutto.
+  # Theme: rewrites the shared styles and forces a full redraw.
   - id: apply_theme
     then:
       - lambda: |-
@@ -2997,7 +2997,7 @@ script:
           else:
             - lvgl.image.update: { id: plan_img, src: img_plan_light }
 
-  # Navigazione: pagina idx (0 Casa ... 5 Sistema) + stato della barra laterale
+  # Navigation: page idx (0 House ... 5 System) + side bar state
   - id: nav
     parameters:
       idx: int
@@ -3014,9 +3014,9 @@ script:
           ui::hidden(id(topbar), false);
       - script.execute: load_cover
 
-  # Copertina: la scarica solo con la pagina Media aperta. Decodificare il JPEG
-  # (anche 400 KB, a piena risoluzione) blocca il loop per qualche secondo:
-  # meglio che succeda mentre si guarda il player, non sulle altre pagine.
+  # Cover: downloaded only while the Media page is open. Decoding the JPEG
+  # (up to 400 KB, at full resolution) blocks the loop for a few seconds:
+  # better while looking at the player than on the other pages.
   - id: load_cover
     then:
       - if:
@@ -3035,7 +3035,7 @@ script:
                       id: cover_img
                       url: !lambda 'return std::string("${ha_url}") + id(cover_url);'
 
-  # ── Schermata Notte ──
+  # ── Night screen ──
   - id: update_nt_track
     then:
       - lambda: |-
@@ -3044,8 +3044,8 @@ script:
           ui::hidden(id(nt_music), !on);
           if (on) ui::text(id(nt_track), a.empty() ? t : t + " · " + a);
 
-  # night = true: ambra scuro e luminosita' minima (scena Notte, luna, sera);
-  # false: testo chiaro alla luminosita' normale (riposo di giorno).
+  # night = true: dark amber and minimum brightness (Night scene, moon, evening);
+  # false: light text at normal brightness (daytime rest).
   - id: night_enter
     parameters:
       night: bool
@@ -3070,21 +3070,21 @@ script:
           brightness: !lambda 'return night ? 0.07f : id(display_brightness) / 100.0f;'
       - script.execute: saver_timeout
 
-  # Dopo 30 s di schermata con l'ora senza nessuno in dinette lo schermo si spegne (un tocco lo riaccende)
+  # After 30 s of clock screen with nobody in the dinette the screen turns off (a touch turns it back on)
   - id: saver_timeout
     mode: restart
     then:
       - delay: 30s
       - if:
           condition:
-            # con qualcuno in dinette resta acceso; si riparte quando se ne va
+            # with someone in the dinette it stays on; restarts when they leave
             lambda: 'return id(night_on) && !id(ha_presence).state;'
           then:
             - light.turn_off: { id: display_backlight, transition_length: 2s }
             - delay: 2s
             - lvgl.pause:
 
-  # Presenza in dinette (Aqara mmWave): schermo spento -> schermata con l'ora, in dissolvenza
+  # Dinette presence (Aqara mmWave): screen off -> clock screen, fading in
   - id: presence_wake
     then:
       - if:
@@ -3107,12 +3107,12 @@ script:
       - light.turn_on:
           id: display_backlight
           brightness: !lambda 'return id(display_brightness) / 100.0;'
-      # riposo breve (distrazione): si torna alla pagina di prima, altrimenti Casa
+      # short rest (distraction): back to the previous page, otherwise House
       - script.execute:
           id: nav
           idx: !lambda 'return millis() - id(night_t) < 10000 ? id(cur_page) : 0;'
 
-  # ── Orologio (barra in alto e schermata Notte) ──
+  # ── Clock (top bar and Night screen) ──
   - id: update_clock
     then:
       - lambda: |-
@@ -3131,7 +3131,7 @@ script:
             ui::text(id(nt_date), std::string(giorni[now.day_of_week - 1]) + " " + dm);
           }
 
-  # ── Luci: conteggio accese ──
+  # ── Lights: count of lights on ──
   - id: update_lights
     then:
       - lambda: |-
@@ -3146,7 +3146,7 @@ script:
           ui::color(id(lights_count), n ? ui::ACCENT : ui::GREY);
       - script.execute: update_checklist
 
-  # ── Temperature e meteo ──
+  # ── Temperatures and weather ──
   - id: update_temps
     then:
       - lambda: |-
@@ -3180,7 +3180,7 @@ script:
           ui::text(id(nt_tin), ui::fmt(tin, 1, "°"));
           ui::text(id(nt_text), ui::fmt(tout, 1, "°"));
 
-  # ── Risorse: valori, stime di autonomia, frase in cima ──
+  # ── Resources: values, autonomy estimates, headline phrase ──
   - id: update_resources
     then:
       - lambda: |-
@@ -3244,7 +3244,7 @@ script:
           ui::text(id(hm_head), home);
       - script.execute: update_alarms
 
-  # Campione orario dello storico (chiamato ogni minuto, scrive una volta l'ora)
+  # Hourly history sample (called every minute, writes once an hour)
   - id: history_tick
     then:
       - lambda: |-
@@ -3258,7 +3258,7 @@ script:
             H = 0;
           } else {
             if (hr <= id(hist_hour)) return;
-            // ore senza campione (pannello spento): buchi nello storico
+            // hours without a sample (panel off): gaps in the history
             for (uint32_t k = 1; k < hr - id(hist_hour) && k < (uint32_t) ui::HN; k++) {
               ui::push(id(hist_batt), H, NAN); ui::push(id(hist_water), H, NAN); ui::push(id(hist_gas), H, NAN);
               H = (H + 1) % ui::HN;
@@ -3270,7 +3270,7 @@ script:
       - script.execute: update_chart
       - script.execute: update_resources
 
-  # Grafico 3 giorni: 72 campioni, il piu' recente a destra
+  # 3-day chart: 72 samples, newest on the right
   - id: update_chart
     then:
       - lambda: |-
@@ -3300,7 +3300,7 @@ script:
           build(id(hist_water), id(ch_acq));
           build(id(hist_gas), id(ch_gas));
 
-  # ── Frigo e condizionatore ──
+  # ── Fridge and air conditioner ──
   - id: update_clima
     then:
       - lambda: |-
@@ -3340,7 +3340,7 @@ script:
           ui::color(id(st_clima_i), cool || man ? ui::ACCENT : ui::GREY);
       - script.execute: update_checklist
 
-  # ── Porta e gas: chip, pianta, risorse ──
+  # ── Door and gas: chip, floor plan, resources ──
   - id: update_security
     then:
       - lambda: |-
@@ -3361,7 +3361,7 @@ script:
       - script.execute: update_alarms
       - script.execute: update_checklist
 
-  # ── Banner allarmi: uno alla volta, in ordine di gravita' ──
+  # ── Alarm banner: one at a time, by severity ──
   - id: update_rete
     then:
       - lambda: |-
@@ -3371,7 +3371,7 @@ script:
           bool hot = live && a > 0.9f * lim;
           uint32_t c = mt ? ui::RED : (!live ? 0x5A606A : (hot ? ui::AMBER : ui::GREEN));
           ui::color(id(rc_rete_i), c);
-          bool val = live && !mt;  // W/A/limite values, otherwise a status text
+          bool val = live && !mt;  // W/A/limit values, otherwise a status text
           ui::hidden(id(rc_rete_w), !val); ui::hidden(id(rc_rete_a), !val);
           ui::hidden(id(rc_rete_l), !val); ui::hidden(id(rc_rete_s), val);
           ui::text(id(rc_rete_w), ui::fmt(w, 0, " W ·"));
@@ -3418,7 +3418,7 @@ script:
           // dashboard indicator (only with key inserted); with key removed the threshold remains: the light turns on at ~11 L = 12%
           if (id(ha_fuel_low).state || id(ha_fuel).state < 13) al.push_back("Riserva gasolio");
           if (id(ha_coolant).state > 105) al.push_back("Motore caldo: liquido oltre 105°");
-          // "Ok, visto" vale per singolo allarme; sparito l'allarme, si dimentica
+          // "Ok, visto" applies per alarm; once the alarm is gone, it is forgotten
           std::string seen = "|", cur;
           std::vector<std::string> vis;
           for (auto &x : al) {
@@ -3426,7 +3426,7 @@ script:
             else vis.push_back(x);
           }
           id(alarm_seen) = seen == "|" ? "" : seen;
-          // piu' allarmi non visti: ruotano (script alarm_rotate, ogni 5 s)
+          // several unseen alarms: they rotate (alarm_rotate script, every 5 s)
           if (!vis.empty()) cur = vis[id(alarm_idx) % vis.size()];
           id(alarm_text) = cur;
           std::string a = al.empty() ? std::string() : (cur.empty() ? al[0] : cur);
@@ -3449,13 +3449,13 @@ script:
           ui::text(id(nt_state), a.empty() ? std::string("tutto ok") : a);
           ui::text(id(nt_state_i), a.empty() ? "\U000F0CC8" : "\U000F0028");
 
-  # Rotazione dei banner quando ce n'e' piu' di uno non visto
+  # Banner rotation when more than one is unseen
   - id: alarm_rotate
     then:
       - lambda: 'id(alarm_idx)++;'
       - script.execute: update_alarms
 
-  # ── Checklist "Partenza" ──
+  # ── "Partenza" (departure) checklist ──
   - id: update_checklist
     then:
       - lambda: |-
@@ -3474,7 +3474,7 @@ script:
             ui::color(ico[i], res[i] == 1 ? ui::GREEN : (res[i] == 0 ? ui::RED : ui::GREY));
           }
 
-  # ── Veicolo e spie ──
+  # ── Vehicle and warning lights ──
   - id: update_vehicle
     then:
       - lambda: |-
@@ -3507,7 +3507,7 @@ script:
       - script.execute: update_alarms
       - script.execute: update_checklist
 
-  # ── Gomme ──
+  # ── Tyres ──
   - id: update_tyres
     then:
       - lambda: |-
@@ -3533,7 +3533,7 @@ script:
           ui::color(id(ty_head_i), c);
       - script.execute: update_alarms
 
-  # ── Livella ──
+  # ── Level ──
   - id: update_level
     then:
       - lambda: |-
@@ -3554,11 +3554,11 @@ script:
           ui::text(id(lv_state), in ? "In bolla" : (m < 1.5f ? "Quasi in bolla" : "Fuori bolla"));
           ui::text(id(lv_xy), "X " + ui::fmt(x, 1, "°") + " · Y " + ui::fmt(y, 1, "°"));
 
-  # ── Luminosita' ──
+  # ── Brightness ──
   - id: update_brightness
     then:
-      # Applica SOLO se il display e' gia' acceso: l'automazione HA che regola
-      # la luminosita' non deve svegliare lo schermo dallo standby.
+      # Apply ONLY if the display is already on: the HA automation that sets
+      # the brightness must not wake the screen from standby.
       - if:
           condition:
             lambda: 'return id(display_backlight).current_values.is_on() && !id(night_on);'
@@ -3581,10 +3581,10 @@ script:
       - delay: 5s
       - lvgl.widget.update: { id: brightness_panel, hidden: true }
 
-  # ── Utenze 12V (stato in Sistema) ──
-  # NB: non e' agganciato a on_turn_on/off dello switch — quello scatta
-  # durante il setup (restore_mode) quando LVGL non esiste ancora e il P4
-  # va in crash. Lo chiamano on_boot, pin_check e l'interval da 5s.
+  # ── 12V loads (status in System) ──
+  # NB: not hooked to the switch's on_turn_on/off — that fires
+  # during setup (restore_mode) when LVGL does not exist yet and the P4
+  # crashes. Called by on_boot, pin_check and the 5s interval.
   - id: update_utenze
     then:
       - lambda: |-
@@ -3614,11 +3614,11 @@ script:
           ui::color(id(sys_ut_v), on ? ui::GREEN : ui::ACCENT);
           ui::text(id(sys_ut_btn_l), on ? "Spegni server e utenze" : "Accendi le utenze");
 
-  # Raspberry HAOS e GL.iNet stanno sulla linea utenze: prima si spengono
-  # (script HA camper_spegni_server), poi si stacca il generale. Il pannello
-  # conta da solo: HA sparisce durante lo spegnimento. Se l'API non e'
-  # connessa la chiamata si perde e il distacco avviene comunque.
-  # ponytail: niente annulla durante i 90 s, aggiungerlo se serve.
+  # The HAOS Raspberry and the GL.iNet are on the loads line: they shut down first
+  # (HA script camper_spegni_server), then the main switch is cut. The panel
+  # counts down on its own: HA goes away during shutdown. If the API is not
+  # connected the call is lost and the cut-off happens anyway.
+  # ponytail: no cancel during the 90 s, add it if needed.
   - id: spegni_server
     mode: single
     then:
@@ -3633,15 +3633,15 @@ script:
             - delay: 1s
             - lambda: 'id(ut_left)--;'
       - switch.turn_off: sw_utenze
-      # lo script e' ancora "running" qui: ut_left = 0 chiude il countdown
+      # the script is still "running" here: ut_left = 0 closes the countdown
       - lambda: 'id(ut_left) = 0;'
       - script.execute: update_utenze
       - lvgl.widget.update: { id: ut_pop, hidden: false }
 
   # ────────────────────────────────────────────────────────────
-  # Tastierino PIN per l'interruttore generale utenze
-  # Il PIN serve in ENTRAMBI i versi: una manata sul touch non deve
-  # ne' spegnere ne' riaccendere il camper.
+  # PIN keypad for the main loads switch
+  # The PIN is required in BOTH directions: an accidental slap on the touch must
+  # neither turn the camper off nor back on.
   # ────────────────────────────────────────────────────────────
   - id: pin_open
     then:
@@ -3669,7 +3669,7 @@ script:
       - lambda: |-
           if (id(pin_buf).size() < 6) id(pin_buf) += d;
           ui::text(id(pin_dots), std::string(id(pin_buf).size(), '*'));
-      # 6 cifre = verifica automatica, il tasto OK resta per comodita'
+      # 6 digits = automatic check, the OK key stays for convenience
       - if:
           condition:
             lambda: 'return id(pin_buf).size() >= 6;'
@@ -3705,15 +3705,15 @@ script:
       - lvgl.widget.update: { id: pin_panel, hidden: true }
 
 # ────────────────────────────────────────────────────────────
-# Audio RIMOSSO 2026-07-05: la board ha solo l'interfaccia speaker
-# (connettore 11), nessuna cassa collegata. Quando arriva la cassa
-# ripristinare da git (commit a8defef: es8311 + i2s + speaker +
-# rtttl/buzzer + media_player per TTS; ampli enable GPIO11).
+# Audio REMOVED 2026-07-05: the board only has the speaker interface
+# (connector 11), no speaker connected. When a speaker is added,
+# restore from git (commit a8defef: es8311 + i2s + speaker +
+# rtttl/buzzer + media_player for TTS; amp enable GPIO11).
 # ────────────────────────────────────────────────────────────
 
 binary_sensor:
-  # Sonda pieno grigie: bagnata = tensione sotto ~1,6 V. Ritardi lunghi contro
-  # lo sciabordio in marcia.
+  # Grey tank full probe: wet = voltage below ~1.6 V. Long delays against
+  # sloshing while driving.
   - platform: template
     id: grey_full
     name: "Grigie piene"
@@ -3722,7 +3722,7 @@ binary_sensor:
     on_press:
       - lambda: 'id(grey_est_l) = ${grey_l}; id(update_grey).execute();'
     on_release:
-      # Il pieno torna asciutto solo scaricando (si svuota sempre tutto)
+      # The full probe only goes dry when draining (the tank is always fully emptied)
       - lambda: 'id(grey_est_l) = 0; id(update_grey).execute();'
   - platform: homeassistant
     id: ha_fuel_low
@@ -3738,8 +3738,8 @@ binary_sensor:
             lambda: 'return id(night_on);'
           then:
             - script.execute: saver_timeout
-  # Stato stufa dall'ESP32 Webasto dedicato (progetto a parte), via HA.
-  # Finche' l'entita' non esiste la card mostra "--".
+  # Heater status from the dedicated Webasto ESP32 (separate project), via HA.
+  # Until the entity exists the card shows "--".
   - platform: homeassistant
     id: webasto_running
     entity_id: binary_sensor.webasto_in_funzione
@@ -3760,7 +3760,7 @@ interval:
     then:
       - script.execute: alarm_rotate
 
-  # Risincronizza bottoni luce, allarmi e utenze (fallback se un evento si perde)
+  # Resync light buttons, alarms and loads (fallback if an event is lost)
   - interval: 5s
     then:
       - lambda: |-
@@ -3776,7 +3776,7 @@ interval:
       - script.execute: update_alarms
       - script.execute: update_utenze
 
-  # Storico orario delle risorse + stime (scrive in flash una volta l'ora)
+  # Hourly resource history + estimates (writes to flash once an hour)
   - interval: 60s
     then:
       - script.execute: history_tick
