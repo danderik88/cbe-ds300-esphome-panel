@@ -4,6 +4,8 @@ Replace the **CBE PC-100 / PC-200 / PC220** control panel of a motorhome with a 
 
 This repo has the **reverse-engineered pinout of DS-300 connector 17**, the small interface that switches the 12 V loads and the water pump from the screen, the complete firmware, and the 3D-printed parts. Everything here is the setup that runs every day in the author's van. Nothing is untested theory.
 
+This is **my build, shared as a reference**, not a kit. Your van will have other lights, other sensors, maybe no Home Assistant at all. What every DS-300 owner has in common is connector 17, and that part is here in full: the pinout, how it was found, the documents, the printed plug and the traps I fell into. Take what you need.
+
 ![The panel in the motorhome](images/panel-installed.jpg)
 *The panel where the CBE PC220 used to be (light theme, home page). The Webasto knob on the right is still the original one.*
 
@@ -24,6 +26,7 @@ This repo has the **reverse-engineered pinout of DS-300 connector 17**, the smal
 - [Switching the 12 V from the screen](#switching-the-12-v-from-the-screen)
 - [Webasto (optional, not done here)](#webasto-optional-not-done-here)
 - [Engine and tyres: related projects](#engine-and-tyres-related-projects)
+- [How the pinout was found](#how-the-pinout-was-found)
 - [Gotchas](#gotchas)
 - [Contributing](#contributing)
 - [Disclaimer](#disclaimer)
@@ -228,6 +231,18 @@ The vehicle page needs data that the DS-300 does not have. Both projects below f
 
 - **[fiat-ducato-x250-wican](https://github.com/danderik88/fiat-ducato-x250-wican)**: decoded body-CAN of the Fiat Ducato X250 read with a WiCAN OBD dongle: engine running, RPM, coolant, fuel, odometer, doors, lights, parking brake, trip computer.
 - **[usb-tpms-home-assistant](https://github.com/danderik88/usb-tpms-home-assistant)**: the cheap 433 MHz "USB TPMS for Android" kits read directly in Home Assistant: pressure and temperature of every tyre.
+
+## How the pinout was found
+
+CBE does not publish the pin-by-pin pinout of connector 17: the manual only says it goes to the panel. This is how it was put together.
+
+1. **The manual.** The CBE PC-100 / PC-200 / DS-300 manual (Italian, [copy found here](https://www.acpasion.net/foro/archivosadjuntos/obelix/manuales/CBE_centralitas_PC100,PC200,DS300_manual_italiano.pdf)) describes every other connector of the DS-300 and what the unit does by itself (battery separator, low-voltage cut-off, simulated D+).
+2. **The forums.** Other owners had the same question: [camperonline.it](https://www.camperonline.it/forum/tecnica/cellula-abitativa/piedinatura-connettore-16-fili-cbe-pc100-ds300/233595) (Italian) and [hobby-wohnmobilforum.de](https://www.hobby-wohnmobilforum.de/forum/thread/21075-cbe-ds300-ersetzen/) (German).
+3. **The wiring diagram.** The official CBE diagram *DG01UK01.A* (PC-100 / PC-200 / DS-300, found through the Internet Archive) names every pin: C.GEN, C.POMPA, B2, AGND… It does not say which row is which.
+4. **The multimeter.** On the van, with the CBE panel unplugged: 12.7 V between pin 15 and pin 3 fixed the geometry (key-slot row = 9–16). Then pin 14 and pin 6 were shorted to pin 3 one at a time, and the main relay and the pump relay of the DS-300 clicked.
+5. **The probes.** Grey-tank "full" was checked by bridging the two probe wires at the tank and watching the reading change on the panel.
+
+The CBE documents are not redistributed here (they belong to CBE). If a link dies, search for the titles above.
 
 ## Gotchas
 
