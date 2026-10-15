@@ -31,7 +31,7 @@ This repo has the **reverse-engineered pinout of DS-300 connector 17**, the smal
 
 ## What you get
 
-**main 12 V switch (PIN protected) · water pump switch · inside / outside temperature from the original CBE probes · grey-water tank full · 15 lights on a real floor plan · battery, water, gas and grey water with days-left estimates · climate · engine, tyres and spirit level · media player · alarms banner · checklist before leaving · night clock · light / dark theme · everything also in Home Assistant**
+**main 12 V switch (PIN protected) · water pump switch · inside / outside temperature from the original CBE probes · grey-water tank full · 15 lights on a real floor plan (via Home Assistant) · battery, water, gas and grey water with days-left estimates · climate · engine, tyres and spirit level · media player · alarms banner · checklist before leaving · night clock · light / dark theme · everything also in Home Assistant**
 
 ![The vehicle page on the real panel](images/panel-vehicle-page.jpg)
 *Vehicle page at night (dark theme). Engine data come from a [WiCAN](https://github.com/danderik88/fiat-ducato-x250-wican), tyres from a [USB TPMS dongle](https://github.com/danderik88/usb-tpms-home-assistant).*
@@ -57,6 +57,19 @@ Other motorhomes with a CBE DS-300 and a 16-pin panel cable are likely the same,
 - The new panel does it with a **2-channel relay module on the NC contacts**. At rest (panel off, rebooting, dead) the NC contacts are closed, so **loads and pump stay ON**. The panel energises a relay only to switch something OFF.
 - The relays are driven by a **PCF8574** and the probes are read by an **ADS1115**, both on the I²C connector of the panel (CN4). No GPIO soldering on the board.
 - Everything else (lights, battery, water, gas…) comes from **Home Assistant** over WiFi.
+
+## Do I need Home Assistant?
+
+**Yes, for most of the screen.** The author runs **Home Assistant OS on a Raspberry Pi inside the van**, on the van's own WiFi router. The panel talks to it over the ESPHome API; it does not need the internet.
+
+| Works **without** Home Assistant | Needs Home Assistant |
+|---|---|
+| main 12 V switch with PIN and pump switch | lights (they must already be in your HA, the panel only calls them) |
+| inside / outside temperature (CBE probes) | battery, water, gas, grey-water estimates |
+| grey tank full alarm | climate, engine (WiCAN), tyres (TPMS), spirit level, media |
+| clock, night screen, theme | alarms, checklist, the clean shutdown script before the 90 s cut |
+
+Without Home Assistant the panel does **not** reboot looking for it (`reboot_timeout: 0s`): the missing values just show `--`.
 
 ## Connector 17 pinout
 
