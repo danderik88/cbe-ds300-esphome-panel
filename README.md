@@ -67,7 +67,7 @@ Other motorhomes with a CBE DS-300 and a 16-pin panel cable are likely the same,
 | main 12 V switch with PIN and pump switch | lights (they must already be in your HA, the panel only calls them) |
 | inside / outside temperature (CBE probes) | battery, water, gas, grey-water estimates |
 | grey tank full alarm | climate, engine (WiCAN), tyres (TPMS), spirit level, media |
-| clock, night screen, theme | alarms, checklist, the clean shutdown script before the 90 s cut |
+| night screen, theme | clock (time comes from HA), alarms, checklist, the clean shutdown script before the 90 s cut |
 
 Without Home Assistant the panel does **not** reboot looking for it (`reboot_timeout: 0s`): the missing values just show `--`.
 
