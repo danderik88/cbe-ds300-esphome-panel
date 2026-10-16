@@ -94,7 +94,7 @@ Without Home Assistant the panel does **not** reboot looking for it (`reboot_tim
 | 4 | outdoor light relay | R.L.EXT | – | |
 | 1, 16 | not connected | | – | |
 
-**Geometry**: two rows of 8. The row on the **key-slot side is 9–16**, the other row is 1–8, and columns pair `k` with `k+8`. The CBE labels (Italian abbreviations) come from the official CBE wiring diagram *DG01UK01.A* (PC-100/PC-200/DS-300) and were checked on the real van one by one with a multimeter and by switching the relays.
+**Geometry**: two rows of 8. The row on the **key-slot side is 9–16**, the other row is 1–8, and columns pair `k` with `k+8`. The CBE labels are Italian abbreviations (C.GEN = *comando generale*, main switch; C.POMPA = *comando pompa*, pump switch; REC = *recupero*, grey water; POT = *potabile*, fresh water; S.RETE = *segnale rete*, mains present). CBE is an Italian company and uses them on every edition: they come from the official CBE wiring diagram *DG01UK01.A* (PC-100/PC-200/DS-300**UK**, the English export version) and were checked on the real van one by one with a multimeter and by switching the relays.
 
 **How it was confirmed**
 
