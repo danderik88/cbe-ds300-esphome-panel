@@ -1,0 +1,76 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="820" viewBox="0 0 1100 820" role="img" aria-label="wiring-probes"><style>
+  @page { size: A4 landscape; margin: 10mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; color: #1c1c1e;
+         font-size: 11pt; line-height: 1.4; margin: 0 auto; padding: 16px; max-width: 1400px; background: #fff; }
+  h1 { font-size: 22pt; margin: 0 0 2pt; }
+  h2 { font-size: 14pt; margin: 22pt 0 6pt; padding: 5pt 10pt; background: #1c1c1e; color: #fff; border-radius: 6px; }
+  p { margin: 0 0 6pt; }
+  .muted { color: #666; }
+  
+  svg text { font-family: Arial, Helvetica, sans-serif; }
+  .w { fill: none; stroke-width: 3; stroke-linejoin: round; }
+  .v12 { stroke: #d62d2d; } .gnd { stroke: #222; } .v33 { stroke: #e8842c; } .v5 { stroke: #8a4fd6; }
+  .i2c { stroke: #2a7fd4; } .sig { stroke: #2fa84f; } .pul { stroke: #c2185b; } .led { stroke: #00897b; }
+  .blk { fill: #fff; stroke-width: 2.5; }
+  .t { font-size: 12px; } .b { font-weight: bold; } .s { font-size: 10px; fill: #555; } .xs { font-size: 9px; fill: #555; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 10px; margin-top: 8pt; }
+  .card { border: 2px solid #E8845C; border-radius: 8px; padding: 8pt 11pt; background: #FFF7F3; page-break-inside: avoid; }
+  .card.warn { border-color: #D14; background: #FFF0F0; }
+  .card.ok { border-color: #34A853; background: #F1FAF2; }
+  .card b.t { display: block; margin-bottom: 3pt; font-size: 11.5pt; }
+  .card ul { margin: 0; padding-left: 16pt; } .card li { margin-bottom: 3pt; }
+  code { font-family: "SF Mono", Menlo, monospace; font-size: 9.5pt; background: #f0efec; padding: 1pt 4pt; border-radius: 3px; }
+  svg { page-break-inside: avoid; }
+  .pb { page-break-before: always; }
+</style><rect id="bg" width="100%" height="100%" fill="#fff"/>
+  <defs><g id="g2"><path d="M0 0V8M-10 8H10M-6 12H6M-2 16H2" stroke="#222" stroke-width="2" fill="none"/></g></defs>
+
+  <rect class="blk" x="780" y="40" width="200" height="740" rx="8" stroke="#2a7fd4"/>
+  <text x="880" y="70" text-anchor="middle" class="t b" style="font-size:15px">ADS1115 · 0x48</text>
+  <g class="s"><text x="788" y="114">A0</text><text x="788" y="284">A1</text><text x="788" y="454">A2</text><text x="788" y="624">A3</text><text x="788" y="744">GND</text></g>
+
+  <!-- A0 / A1: NTC -->
+  <g id="ntc">
+    <path class="w gnd" d="M480 110H780"/><circle cx="480" cy="110" r="4.5" fill="#222"/>
+    <path class="w v33" d="M480 110V98M480 62V48"/>
+    <rect x="472" y="62" width="16" height="36" fill="#fff" stroke="#e8842c" stroke-width="2"/>
+    <text x="480" y="40" text-anchor="middle" class="s" style="fill:#e8842c">3V3</text>
+    <text x="496" y="84" class="s" style="font-family:Arial,sans-serif;font-size:10px;fill:#555">10 kΩ 1%</text>
+    <path class="w gnd" d="M480 110V122M480 158V172"/>
+    <rect x="472" y="122" width="16" height="36" fill="#fff" stroke="#222" stroke-width="2"/>
+    <use href="#g2" x="480" y="172"/>
+  </g>
+  <text x="496" y="144" class="s">CBE inside NTC (2 wires)</text>
+  <use href="#ntc" y="170"/>
+  <text x="496" y="314" class="s">CBE outside NTC (2 wires)</text>
+
+  <!-- A2 / A3: acque grigie -->
+  <g transform="translate(0 40)"><g id="gr">
+    <path class="w gnd" d="M480 410H780"/><circle cx="480" cy="410" r="4.5" fill="#222"/>
+    <path class="w v33" d="M480 410V398M480 362V348"/>
+    <rect x="472" y="362" width="16" height="36" fill="#fff" stroke="#e8842c" stroke-width="2"/>
+    <text x="480" y="340" text-anchor="middle" class="s" style="fill:#e8842c">3V3</text>
+    <text x="496" y="384" class="s" style="font-family:Arial,sans-serif;font-size:10px;fill:#555">100 kΩ</text>
+    <path class="w" style="stroke:#7b3fa0" d="M480 410V470"/>
+    <circle cx="480" cy="474" r="5" fill="#fff" stroke="#7b3fa0" stroke-width="2"/>
+  </g>
+  <text x="496" y="490" class="s">conn 17 pin 9 · grey tank "full" probe</text>
+  <use href="#gr" y="170"/></g>
+  <text x="496" y="660" class="s">conn 17 pin 13 · grey tank 1/3 probe (not in my tank)</text>
+
+  <!-- GND / AGND -->
+  <path class="w" style="stroke:#7a9a01" d="M780 740H300"/>
+  <circle cx="294" cy="740" r="5" fill="#fff" stroke="#7a9a01" stroke-width="2"/>
+  <text x="284" y="744" text-anchor="end" class="s">conn 17 pin 11 · AGND (own wire)</text>
+
+  <!-- bus -->
+  <path class="w i2c" style="stroke-width:5" d="M980 340H1028"/>
+  <rect x="1028" y="300" width="66" height="80" rx="6" fill="#1c1c1e"/>
+  <text x="1061" y="335" text-anchor="middle" style="font-size:12px;fill:#fff" class="b">CN4</text>
+  <text x="1061" y="352" text-anchor="middle" style="font-size:10px;fill:#bbb">P4</text>
+  <text x="1004" y="326" text-anchor="middle" class="xs" style="fill:#2a7fd4">VDD·GND</text>
+  <text x="1004" y="358" text-anchor="middle" class="xs" style="fill:#2a7fd4">SDA·SCL</text>
+  <path class="w gnd" d="M980 520H1010"/><use href="#g2" x="1010" y="520"/>
+  <text x="972" y="524" text-anchor="end" class="xs">ADDR → GND</text>
+</svg>

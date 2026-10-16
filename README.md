@@ -140,7 +140,8 @@ Measure your IDC socket before printing: the parameters are at the top of [`idc1
 
 ### 3. Wire the interface
 
-![Wiring](images/wiring.svg)
+![Wiring overview](images/wiring-overview.svg)
+*Overview: power, the two relays on pins 14 and 6, the I²C bus and the grey-tank probe.*
 
 1. **Power**: pin 15 → **2 A fuse** → buck IN+, pin 3 → buck IN−. The buck's USB-C goes to the panel.
 2. **5 V for the relay coils**: cut the USB-C cable open and tap red (5 V) and black (GND) towards the relay module's **JD-VCC** and **GND**. Re-join all four wires towards the panel.
@@ -152,7 +153,19 @@ Measure your IDC socket before printing: the parameters are at the top of [`idc1
    - A0 and A1: the two **original CBE NTC probes** (2 wires each, no polarity; they reach the panel directly, not through connector 17). Divider: 3V3 → 10 kΩ 1% → A0 → NTC → GND. My probes measure **B = 3950, R25 = 9.2 kΩ**.
    - A2: **grey tank full**. 3V3 → 100 kΩ → A2 → pin 9, and **pin 11 (AGND) → ADS1115 GND with its own wire**. Without it the probe has no return path.
 
-I put the ADS1115, its resistors and the header strips on a small perfboard, one bus column per signal; the PCF8574 and the relay module stay outside on Dupont wires.
+I put the ADS1115, its resistors and the header strips on a small perfboard, one bus column per signal; the PCF8574 and the relay module stay outside on Dupont wires. These are the drawings I built it from:
+
+![Probe circuits](images/wiring-probes.svg)
+*The probe circuits on the ADS1115: two NTC dividers and the grey-tank probe with its 100 kΩ pull-up. A3 (grey ⅓) is drawn but not fitted in my tank.*
+
+![Perfboard layout](images/perfboard-layout.svg)
+*Perfboard layout, component side, holes A–X × 01–18. Grey = bare wire under the board, orange = jumper on top. E11/E17 and R5 are left over from a Webasto input that is no longer used.*
+
+![Cable by cable](images/wiring-cables.svg)
+*Every Dupont cable, one per row: what goes where, with the perfboard coordinates. Steps 1–5 on the bench, 6–9 in the van.*
+
+![Pictorial wiring](images/wiring-pictorial.svg)
+*The same connections drawn where the parts actually sit.*
 
 | | |
 |---|---|
