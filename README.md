@@ -2,7 +2,7 @@
 
 Replace the **CBE PC-100 / PC-200 / PC220** control panel of a motorhome with a **10.1" ESP32-P4 touch screen** running **ESPHome + LVGL** and **Home Assistant**. The **CBE DS-300** distribution unit stays where it is, untouched: the new panel plugs into the same 16-pin cable (connector 17) through a 3D-printed plug.
 
-This repo has the **reverse-engineered pinout of DS-300 connector 17**, the small interface that switches the 12 V loads and the water pump from the screen, the complete firmware, and the 3D-printed parts. Everything here is the setup that runs every day in the author's van. Nothing is untested theory.
+This repo has the **reverse-engineered pinout of DS-300 connector 17**, the small interface that switches the 12 V loads and the water pump from the screen, the complete firmware, and the 3D-printed parts. Everything here is the setup that runs every day in my van. Nothing is untested theory.
 
 This is **my build, shared as a reference**, not a kit. Your van will have other lights, other sensors, maybe no Home Assistant at all. What every DS-300 owner has in common is connector 17, and that part is here in full: the pinout, how it was found, the documents, the printed plug and the traps I fell into. Take what you need.
 
@@ -25,7 +25,7 @@ This is **my build, shared as a reference**, not a kit. Your van will have other
 - [The screens](#the-screens)
 - [Switching the 12 V from the screen](#switching-the-12-v-from-the-screen)
 - [Webasto (optional, not done here)](#webasto-optional-not-done-here)
-- [Engine and tyres: related projects](#engine-and-tyres-related-projects)
+- [Related projects](#related-projects)
 - [How the pinout was found](#how-the-pinout-was-found)
 - [Gotchas](#gotchas)
 - [Contributing](#contributing)
@@ -63,7 +63,7 @@ Other motorhomes with a CBE DS-300 and a 16-pin panel cable are likely the same,
 
 ## Do I need Home Assistant?
 
-**Yes, for most of the screen.** The author runs **Home Assistant OS on a Raspberry Pi inside the van**, on the van's own WiFi router. The panel talks to it over the ESPHome API; it does not need the internet.
+**Yes, for most of the screen.** I run **Home Assistant OS on a Raspberry Pi inside the van**, on the van's own WiFi router. The panel talks to it over the ESPHome API; it does not need the internet.
 
 | Works **without** Home Assistant | Needs Home Assistant |
 |---|---|
@@ -86,7 +86,7 @@ Without Home Assistant the panel does **not** reboot looking for it (`reboot_tim
 | 6 | **water pump switch** | C.POMPA | ✅ relay 2 | to GND = ON |
 | 9 | **grey tank full** | REC 3/3 | ✅ ADS1115 A2 | passive probe, measured against pin 11 |
 | 11 | **probe ground** | AGND | ✅ ADS1115 GND | the tank electrode, **not** ground (open circuit to pin 3) |
-| 13 | grey tank ⅓ | REC 1/3 | – | not fitted in the author's tank |
+| 13 | grey tank ⅓ | REC 1/3 | – | not fitted in my tank |
 | 2 / 8 / 7 | fresh water ⅓, ⅔, full | POT 1/3, 2/3, 3/3 | – | water level comes from Home Assistant |
 | 5 | alternator D+ | OUT D+ | – | |
 | 10 | mains present | S.RETE | – | |
@@ -107,7 +107,7 @@ Without Home Assistant the panel does **not** reboot looking for it (`reboot_tim
 | Part | Qty | Notes |
 |---|---|---|
 | **Guition JC8012P4A1C** (ESP32-P4, 10.1") | 1 | WiFi via the on-board ESP32-C6 |
-| **12 → 5 V buck converter, USB-C, 3 A** | 1 | the author uses a potted 8–32 V → 5 V 3 A one. The panel needs the full 3 A |
+| **12 → 5 V buck converter, USB-C, 3 A** | 1 | I use a potted 8–32 V → 5 V 3 A one. The panel needs the full 3 A |
 | Inline mini-blade fuse holder + **2 A** fuse | 1 | on the +12 V from pin 15 |
 | **PCF8574** I²C module | 1 | address 0x20 (A0 A1 A2 to GND) |
 | **2-channel relay module, 5 V coils**, opto-isolated, **low-level trigger**, with a `GND · VCC · JD-VCC` header | 1 | the jumper between VCC and JD-VCC is removed. Modules with `DC+ / DC-` screw terminals and a High/Low jumper do **not** work with a PCF8574 |
@@ -134,7 +134,7 @@ The cable from the DS-300 ends in a female 2×8 IDC socket. [`hardware/idc16-plu
 
 *The printed plug: the key slot on the shroud matches the bump of the IDC socket, so it only goes in one way.*
 
-Only six wires are needed (pins 15, 3, 14, 6, 9, 11). The author wired all sixteen, for future use. The wire colours in the pinout picture are the ones of this plug, not of the van's cable.
+Only six wires are needed (pins 15, 3, 14, 6, 9, 11). I wired all sixteen, for future use. The wire colours in the pinout picture are the ones of this plug, not of the van's cable.
 
 Measure your IDC socket before printing: the parameters are at the top of [`idc16_plug.py`](hardware/idc16-plug/idc16_plug.py) (FreeCAD, `freecadcmd idc16_plug.py` regenerates the STL and STEP).
 
@@ -149,16 +149,18 @@ Measure your IDC socket before printing: the parameters are at the top of [`idc1
 5. **PCF8574**: A0, A1, A2 to GND (address 0x20). **P0 → IN1**, **P1 → IN2**.
 6. **Relay 1**: COM → pin 3 (GND), **NC** → pin 14. **Relay 2**: COM → pin 3, **NC** → pin 6. Leave NO free.
 7. **ADS1115**: ADDR to GND with a wire (floating = random address).
-   - A0 and A1: the two **original CBE NTC probes** (2 wires each, no polarity; they reach the panel directly, not through connector 17). Divider: 3V3 → 10 kΩ 1% → A0 → NTC → GND. The author's probes measure **B = 3950, R25 = 9.2 kΩ**.
+   - A0 and A1: the two **original CBE NTC probes** (2 wires each, no polarity; they reach the panel directly, not through connector 17). Divider: 3V3 → 10 kΩ 1% → A0 → NTC → GND. My probes measure **B = 3950, R25 = 9.2 kΩ**.
    - A2: **grey tank full**. 3V3 → 100 kΩ → A2 → pin 9, and **pin 11 (AGND) → ADS1115 GND with its own wire**. Without it the probe has no return path.
 
-The author put the ADS1115 and the four resistors on a small perfboard, one bus column per signal; the PCF8574 and the relay module stay outside on Dupont wires.
+I put the ADS1115, its resistors and the header strips on a small perfboard, one bus column per signal; the PCF8574 and the relay module stay outside on Dupont wires.
 
 | | |
 |---|---|
-| ![Perfboard, solder side](images/perfboard-bottom.jpg) | ![Back of the panel](images/p4-back-connectors.jpg) |
+| ![Perfboard, component side](images/perfboard-top.jpg) | ![Perfboard, solder side](images/perfboard-bottom.jpg) |
 
-*Left: the perfboard, solder side (bus columns as bare wire). Right: back of the Guition board, CN4 is the small 4-pin connector at the bottom (the module boxes in this older picture are not up to date: follow the wiring diagram above).*
+![Back of the panel](images/p4-back-connectors.jpg)
+
+*Top: the final perfboard, component side (ADS1115, divider resistors, female headers for the Dupont wires) and solder side (bus columns as bare wire). Bottom: back of the Guition board, CN4 is the small 4-pin connector at the bottom (the module boxes in this older picture are not up to date: follow the wiring diagram above).*
 
 **Before plugging in**, with the relay module powered and the PCF8574 at rest: relay 1 NC must be closed (continuity between COM and NC).
 
@@ -171,7 +173,7 @@ The author put the ADS1115 and the four resistors on a small perfboard, one bus 
 
 ## Firmware
 
-[`firmware/panel-p4.yaml`](firmware/panel-p4.yaml) is a single ESPHome file (~3800 lines, LVGL). Labels on the screen are in Italian (the author's van); code comments are in English. Some identifiers keep Italian names (`utenze` = 12 V loads, `pompa` = pump, `grigie` = grey water).
+[`firmware/panel-p4.yaml`](firmware/panel-p4.yaml) is a single ESPHome file (~3800 lines, LVGL). Labels on the screen are in Italian (my van); code comments are in English. Some identifiers keep Italian names (`utenze` = 12 V loads, `pompa` = pump, `grigie` = grey water).
 
 ```bash
 pip install esphome==2026.6.4
@@ -204,7 +206,7 @@ Design mockups of the UI (the firmware follows them; the photos above are the re
 
 ## Switching the 12 V from the screen
 
-The main switch cuts the lights, the 12 V sockets, the boiler, and in the author's van also the Raspberry Pi with Home Assistant and the router. So:
+The main switch cuts the lights, the 12 V sockets, the boiler, and in my van also the Raspberry Pi with Home Assistant and the router. So:
 
 - **A PIN is asked** both to switch off and to switch on: a hand on the screen must not black out the camper.
 - **Switching off takes 90 s**: the panel first calls a Home Assistant script (`script.camper_spegni_server`, "switch off server") that shuts down the server and the router cleanly, then cuts the line. A big **countdown** stays on screen.
@@ -217,20 +219,22 @@ The main switch cuts the lights, the 12 V sockets, the boiler, and in the author
 - The panel itself runs from **B2 before the main relay**, so it stays on with the loads off and can switch them back on.
 - Fail-safe by design: no panel = relays at rest = everything on. A crash can never leave the van dark.
 
-The **water pump** switch has no PIN: it is meant for repairs or a leak. Note that anything powered from the pump line (in the author's van, the ESP32 of the water tank sensor) goes off with it.
+The **water pump** switch has no PIN: it is meant for repairs or a leak. Note that anything powered from the pump line (in my van, the ESP32 of the water tank sensor) goes off with it.
 
 ## Webasto (optional, not done here)
 
 The Climate page shows the Webasto state from a Home Assistant entity (`binary_sensor.webasto_in_funzione`, "Webasto running"); it shows `--` if you don't have one.
 
-Driving the heater from this panel was planned (relay 2 in parallel with the button of the MultiControl MC04/05 knob, status read from the spare plug behind it) but **was not finished on purpose**: a complete reverse engineering of the **Webasto MC04/05 panel** is under way and will be published as a separate repository, with an ESP32 that replaces the knob. This repo will link it when it is out.
+Driving the heater from this panel was planned (relay 2 in parallel with the button of the MultiControl MC04/05 knob, status read from the spare plug behind it) but **was not finished on purpose**: a complete reverse engineering of the **Webasto MC04/05 panel** is under way and will be published as a separate repository, with an ESP32 that replaces the knob. I will link it here when it is out.
 
-## Engine and tyres: related projects
+## Related projects
 
-The vehicle page needs data that the DS-300 does not have. Both projects below feed it in the author's van:
+The DS-300 knows nothing about the engine, the tyres or the fridge. In my van these projects of mine fill the gaps, all feeding Home Assistant:
 
 - **[fiat-ducato-x250-wican](https://github.com/danderik88/fiat-ducato-x250-wican)**: decoded body-CAN of the Fiat Ducato X250 read with a WiCAN OBD dongle: engine running, RPM, coolant, fuel, odometer, doors, lights, parking brake, trip computer.
 - **[usb-tpms-home-assistant](https://github.com/danderik88/usb-tpms-home-assistant)**: the cheap 433 MHz "USB TPMS for Android" kits read directly in Home Assistant: pressure and temperature of every tyre.
+- **[vevor_fridge_ble2mqtt](https://github.com/danderik88/vevor_fridge_ble2mqtt)**: an ESP32 bridging the Bluetooth of Vevor / Alpicool compressor fridges to MQTT: temperature, set point and on/off from Home Assistant and from the panel's floor plan.
+- **Webasto MC04/05**: coming as its own repo (see above).
 
 ## How the pinout was found
 
@@ -265,7 +269,7 @@ If this saved you a few evenings with a multimeter, you can [buy me a coffee](ht
 
 This is a **hobby project**, shared for information only, with **no warranty of any kind** (see [LICENSE](LICENSE)).
 
-- Working on the electrical system of a vehicle is **at your own risk**. A short on B2 can melt wires or start a fire: fuse every wire that leaves +12 V, close to the source. The author accepts **no liability** for any damage to vehicles, equipment, data or people.
+- Working on the electrical system of a vehicle is **at your own risk**. A short on B2 can melt wires or start a fire: fuse every wire that leaves +12 V, close to the source. I accept **no liability** for any damage to vehicles, equipment, data or people.
 - The pinout comes from **one vehicle**. Measure yours before connecting anything.
 - The original panel switched the loads off at low voltage; this setup does not. Look after your battery.
 - Check that modifications are allowed by your local rules, insurance and warranty.
@@ -273,9 +277,9 @@ This is a **hobby project**, shared for information only, with **no warranty of 
 
 ## How this was made
 
-This project was done together with an AI coding agent ([Claude Code](https://claude.com/claude-code) by Anthropic). The agent searched the CBE documentation and the forums for the pinout, planned the measurements, wrote the firmware and the CAD scripts, flashed the panel over the network, and drafted this documentation.
+I built this together with an AI coding agent ([Claude Code](https://claude.com/claude-code) by Anthropic). The agent searched the CBE documentation and the forums for the pinout, planned the measurements, wrote the firmware and the CAD scripts, flashed the panel over the network, and drafted this documentation.
 
-Every measurement, every relay click and every wire was done by hand on the real van, and nothing is listed as working unless it was seen working there. If you find a mistake, please [open an issue](../../issues).
+I did every measurement, every relay click and every wire by hand on the real van, and nothing is listed as working unless I saw it working there. If you find a mistake, please [open an issue](../../issues).
 
 ## License
 
