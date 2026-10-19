@@ -6,8 +6,11 @@ This repo has the **reverse-engineered pinout of DS-300 connector 17**, the smal
 
 This is **my build, shared as a reference**, not a kit. Your van will have other lights, other sensors, maybe no Home Assistant at all. What every DS-300 owner has in common is connector 17, and that part is here in full: the pinout, how it was found, the documents, the printed plug and the traps I fell into. Take what you need.
 
+![The original CBE PC220 panel](images/cbe-pc220-original.jpg)
+*Before: the original CBE PC220 (Elnagh Prince edition). Small LCD and seven buttons, hard to find and expensive to replace.*
+
 ![The panel in the motorhome](images/panel-installed.jpg)
-*The panel where the CBE PC220 used to be (light theme, home page). The Webasto knob on the right is still the original one.*
+*After: the new panel where the CBE PC220 used to be (light theme, home page). The Webasto knob on the right is still the original one.*
 
 > ⚠️ You are working on the 12 V system of a vehicle. Read the [disclaimer](#disclaimer) first.
 
