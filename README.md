@@ -6,8 +6,8 @@ This repo has the **reverse-engineered pinout of DS-300 connector 17**, the smal
 
 This is **my build, shared as a reference**, not a kit. Your van will have other lights, other sensors, maybe no Home Assistant at all. What every DS-300 owner has in common is connector 17, and that part is here in full: the pinout, how it was found, the documents, the printed plug and the traps I fell into. Take what you need.
 
-![The original CBE PC220 panel](images/cbe-pc220-original.jpg)
-*Before: the original CBE PC220 (Elnagh Prince edition). Small LCD and seven buttons, hard to find and expensive to replace.*
+![The original panel](images/cbe-pc220-original.jpg)
+*Before: the original panel. The front is a custom one branded Elnagh Prince, the electronics are CBE (PC220 family, made in Trento) on the same DS-300 and connector 17. Small LCD and seven buttons, hard to find and expensive to replace.*
 
 ![The panel in the motorhome](images/panel-installed.jpg)
 *After: the new panel where the CBE PC220 used to be (light theme, home page). The Webasto knob on the right is still the original one.*
@@ -48,7 +48,7 @@ This is **my build, shared as a reference**, not a kit. Your van will have other
 |---|---|
 | Motorhome | **Elnagh Prince 55L** (2009), Fiat Ducato X250 base |
 | Distribution unit | **CBE DS-300/E** (Elnagh variant, manual "DS300-EL") |
-| Original panel | **CBE PC220** (same connector as PC-100 / PC-200) |
+| Original panel | CBE electronics, PC220 family, with a custom **Elnagh Prince** front (same connector as PC-100 / PC-200) |
 | New panel | **Guition JC8012P4A1C**, ESP32-P4 + ESP32-C6, 10.1" 1280×800 IPS, capacitive touch |
 | Firmware | ESPHome **2026.6.4**, LVGL 9 |
 
