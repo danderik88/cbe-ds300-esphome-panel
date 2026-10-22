@@ -162,7 +162,7 @@ I put the ADS1115, its resistors and the header strips on a small perfboard, one
 *The probe circuits on the ADS1115: two NTC dividers and the grey-tank probe with its 100 kΩ pull-up. A3 (grey ⅓) is drawn but not fitted in my tank.*
 
 ![Perfboard layout](images/perfboard-layout.svg)
-*Perfboard layout, component side, holes A–X × 01–18. Grey = bare wire under the board, orange = jumper on top. E11/E17 and R5 are left over from a Webasto input that is no longer used.*
+*Perfboard layout, component side, holes A–X × 01–18. Grey = bare wire under the board, orange = jumper on top. E11/E17 are left over from a Webasto input that is no longer used (its R5 has been removed).*
 
 ![Cable by cable](images/wiring-cables.svg)
 *Every Dupont cable, one per row: what goes where, with the perfboard coordinates. Steps 1–5 on the bench, 6–9 in the van.*
